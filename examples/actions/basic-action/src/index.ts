@@ -1,16 +1,15 @@
-import type {
-  ActionsAPI,
-  ActionParameterDefinitions,
-  ActionSettingDefinitions,
-  ActionParameters,
-  ActionSettings,
-} from "@nasa-jpl/plandev-actions";
+import { defineParameters } from "@nasa-jpl/plandev-actions";
+import type { ActionsAPI, ActionSettingDefinitions, ActionParameters, ActionSettings } from "@nasa-jpl/plandev-actions";
 
 // Define schemas for your action's settings and parameters
-export const parameterDefinitions = {
-  urlPath: { type: "string" },
-  sleepMs: { type: "int" },
-} satisfies ActionParameterDefinitions;
+// `defineParameters` keeps the literal types, so no `as const` / `satisfies` is needed.
+export const parameterDefinitions = defineParameters({
+  urlPath: { type: "string", description: "Path appended to the externalUrl setting" },
+  sleepMs: { type: "int", required: false, defaultValue: 0 },
+  // `withRevision: true` lets the person running the action pick the working copy or a named
+  // revision of the file; the action then receives a `FileRef` ({ path, revision? }), not a string.
+  sourceFile: { type: "file", withRevision: true, required: false },
+});
 
 export const settingDefinitions = {
   externalUrl: { type: "string" },
@@ -59,19 +58,27 @@ export async function main(parameters: MyActionParameters, settings: MyActionSet
   const files = await actionsAPI.listFiles("");
   console.log(`action files: ${JSON.stringify(files)}`);
 
-  const readFileName = "my_file";
   // note: only wrap in try/catch to handle *non-fatal errors*! Fatal errors should be thrown to properly report action run as failure
-  try {
-    const myFile = await actionsAPI.readFile(readFileName);
-    console.log(`${readFileName}: ${myFile}`);
-  } catch (e) {
-    console.warn(`Could not find file named ${readFileName}`);
+  if (parameters.sourceFile) {
+    try {
+      // readFile accepts a FileRef and reads the chosen revision (or the working copy if none was chosen)
+      const myFile = await actionsAPI.readFile(parameters.sourceFile);
+      const { path, revision } = parameters.sourceFile;
+      console.log(`${path} @ ${revision ?? "working copy"}: ${myFile}`);
+    } catch (e) {
+      console.warn(`Could not read ${parameters.sourceFile.path}: ${e}`);
+    }
   }
 
-  //
   const jsonStr = JSON.stringify(resultData, null, 2);
-  const writeResult = await actionsAPI.writeFile("action-template-output", jsonStr);
+  const outputFile = "action-template-output";
+  const writeResult = await actionsAPI.writeFile(outputFile, jsonStr, true);
   console.log(`writeResult: ${JSON.stringify(writeResult)}`);
+
+  // Bookmark the output as a named revision. Writing and revising are two separate calls: if
+  // this one fails the write has still succeeded. Each run adds a revision you can read back later.
+  const revision = await actionsAPI.createFileRevision(outputFile, { message: `Response from ${url}` });
+  console.log(`created revision ${revision.name}`);
 
   return {
     status: "SUCCESS",

@@ -4,12 +4,17 @@
 
 An action exports three things, all in [`src/index.ts`](src/index.ts):
 
-- **`parameterDefinitions`** — values supplied per run (`urlPath`, `sleepMs`)
+- **`parameterDefinitions`** — values supplied per run (`urlPath`, `sleepMs`, `sourceFile`), declared with `defineParameters`
 - **`settingDefinitions`** — values configured once at upload (`externalUrl`)
 - **`main(parameters, settings, actionsAPI)`** — the entry point; its return value is the run's result
 
-The `satisfies` clauses let TypeScript derive the parameter and setting types, so
-`parameters.urlPath` is known to be a `string` without a second declaration to keep in sync.
+`defineParameters` (and `satisfies` for settings) let TypeScript derive the parameter and setting
+types, so `parameters.urlPath` is known to be a `string` without a second declaration to keep in sync.
+
+**Revisions:** `sourceFile` sets `withRevision: true`, so the person running the action picks the
+working copy or a named revision, and `readFile` reads exactly that. After writing its output the
+action calls `createFileRevision`, so every run leaves a named, immutable snapshot
+(`listFileRevisions` / `readFileAtRevision` read them back).
 
 This example also calls an external URL, then reads and writes plan files via `actionsAPI`.
 
@@ -31,8 +36,8 @@ Upload `dist/action.js` to PlanDev
 ## Try it
 
 1. Upload `dist/action.js`, setting `externalUrl` to `https://api.github.com`.
-2. Run it with `urlPath` = `repos/NASA-AMMOS/plandev`, `sleepMs` = `0`.
-3. The JSON response is written back to the plan as `action-template-output`.
+2. Run it with `urlPath` = `repos/NASA-AMMOS/plandev`, `sleepMs` = `0`; optionally pick a `sourceFile` and revision.
+3. The JSON response is written back to the plan as `action-template-output`, with a new revision per run.
 
 ## Tests
 

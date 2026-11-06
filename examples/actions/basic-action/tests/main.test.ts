@@ -40,6 +40,7 @@ const mockActionsAPI = createMock<ActionsAPI>({
   listFiles: async () => "[]",
   readFile: async () => "test",
   writeFile: async () => ({ success: true }),
+  createFileRevision: async () => ({ name: "a" }),
 });
 
 test("plandev basic example action", async (t) => {
@@ -57,6 +58,20 @@ test("plandev basic example action", async (t) => {
       mockActionsAPI,
     );
     assert.equal(mockFetch.mock.calls.length, 1, "fetch should have been called once");
+  });
+
+  await t.test("reads the chosen revision and bookmarks its output", async () => {
+    const readFile = mock.fn(async (_file: unknown) => "old contents");
+    const createFileRevision = mock.fn(async (_path: string, _opts?: object) => ({ name: "c" }));
+    const api = createMock<ActionsAPI>({ ...mockActionsAPI, readFile, createFileRevision });
+
+    await main(
+      { urlPath: "repos/NASA-AMMOS/plandev", sleepMs: 0, sourceFile: { path: "notes.txt", revision: "b" } },
+      { externalUrl: "https://api.github.com" },
+      api,
+    );
+    assert.deepEqual(readFile.mock.calls[0].arguments[0], { path: "notes.txt", revision: "b" });
+    assert.equal(createFileRevision.mock.calls[0].arguments[0], "action-template-output");
   });
 });
 
