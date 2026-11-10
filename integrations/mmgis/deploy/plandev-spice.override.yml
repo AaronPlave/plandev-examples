@@ -1,0 +1,17 @@
+# Compose override that mounts the plandev-examples SPICE kernels into every PlanDev service that loads
+# the orbiter model: merlin (resource-type extraction on upload), merlin workers (simulation) and
+# scheduler workers (simulation + procedural goals).
+# Use alongside plandev's docker-compose.yml:
+#   SPICE_KERNELS_PATH=/abs/path/to/plandev-examples/spice-kernels \
+#     docker compose -f docker-compose.yml -f <this file> up -d
+x-spice: &spice
+  environment:
+    SPICE_DIRECTORY: /spice/kernels
+  volumes:
+    - ${SPICE_KERNELS_PATH:?set SPICE_KERNELS_PATH to plandev-examples/spice-kernels}:/spice/kernels:ro
+services:
+  plandev_merlin: *spice
+  plandev_merlin_worker_1: *spice
+  plandev_merlin_worker_2: *spice
+  plandev_scheduler_worker_1: *spice
+  plandev_scheduler_worker_2: *spice

@@ -51,7 +51,9 @@ The geometry test task automatically sets SPICE_DIRECTORY to the repository’s 
 ### Deploying to PlanDev (Docker)
 
 PlanDev simulations execute inside Merlin workers. Scheduler workers also execute simulations when running 
-scheduling goals, so every Merlin and Scheduler worker replica must have access to the kernels.
+scheduling goals, and the Merlin server instantiates the model on upload to extract its resource types,
+so `plandev_merlin` and every Merlin and Scheduler worker replica must have access to the kernels. (Without
+the kernels on `plandev_merlin` the upload succeeds but the UI reports "extraction errors" and lists no resources.)
 
 Set SPICE_KERNELS_PATH in your PlanDev deployment's .env file to the absolute path of **this repository’s** 
 kernel directory:
@@ -60,8 +62,8 @@ kernel directory:
 SPICE_KERNELS_PATH=/absolute/path/to/plandev-examples/spice-kernels
 ```
 
-Then add the following entries to every `plandev_merlin_worker_*` and `plandev_scheduler_worker_*` service in your 
-`docker-compose` file:
+Then add the following entries to `plandev_merlin` and every `plandev_merlin_worker_*` and `plandev_scheduler_worker_*`
+service in your `docker-compose` file (or use [`integrations/mmgis/deploy/plandev-spice.override.yml`](../../integrations/mmgis/deploy/plandev-spice.override.yml)):
 
 ```
 environment:
@@ -75,7 +77,7 @@ repository. After updating the Compose file, recreate the affected workers with 
 
 ## Scheduling goals
 
-9 procedural scheduling goals (in `scheduling/`), built as individual ShadowJar artifacts:
+10 procedural scheduling goals (in `scheduling/`), built as individual ShadowJar artifacts:
 
 | Goal | What it does |
 |---|---|
@@ -88,6 +90,7 @@ repository. After updating the Compose file, recreate the affected workers with 
 | `SchedulePriorityActivities` | Priority-based scheduling with 7 activity priorities and altitude thresholds |
 | `SchedulePriorityActivitiesAfterDownlink` | Battery-aware priority scheduling with two modes: RE-SIMULATION and VIRTUAL BATTERY |
 | `ScheduleRadarWithStopConditions` | Simulate-then-verify with rollback: pre/post-checks on battery, data volume, and downlink conflicts |
+| `ScheduleTargetObservations` | Takes GeoJSON Mars targets as an argument. For each, finds the closest MRO sub-spacecraft pass and schedules a `TakeRadarObservation` there (closest pass, not footprint coverage). Used by [`integrations/mmgis`](../../integrations/mmgis/) |
 
 ## Constraint procedures
 
@@ -133,7 +136,7 @@ Sample plans, views, and external events are in `demo/`:
 - `build/libs/orbiter-example.jar` — the mission model. Upload to PlanDev **after mounting the
   SPICE kernels** (see [Deploying to PlanDev](#deploying-to-plandev-docker) above); without them
   the model fails at load time.
-- `scheduling/build/libs/<GoalName>.jar` — nine scheduling goals, one JAR each.
+- `scheduling/build/libs/<GoalName>.jar` — ten scheduling goals, one JAR each.
 - `constraints/build/libs/<ConstraintName>.jar` — six constraints, one JAR each.
 
 Note that the procedure JARs need the two-step `compileJava` → `buildAll…ProcedureJars`

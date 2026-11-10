@@ -1,0 +1,25 @@
+.plandevTool { height: 100%; display: flex; flex-direction: column; color: var(--color-f); }
+.plandevTool_content { padding: 8px 12px 24px; overflow-y: auto; font-size: 13px; }
+.plandevTool h3 { font-size: 13px; margin: 14px 0 6px; color: var(--color-mmgis); text-transform: uppercase; letter-spacing: 0.04em; }
+.plandevTool h4 { font-size: 12px; margin: 10px 0 4px; }
+.plandevTool select, .plandevTool input[type='number'], .plandevTool input[type='text'] {
+  width: 100%; box-sizing: border-box; background: var(--color-a1, #222); color: inherit; border: 1px solid var(--color-a3, #444); padding: 4px 6px; border-radius: 3px; }
+.plandevTool_grid { display: grid; grid-template-columns: 1fr 120px; gap: 4px 8px; align-items: center; margin-bottom: 6px; }
+.plandevTool_targets, .plandevTool_candidates, .plandevTool_metrics { list-style: none; padding: 0; margin: 6px 0; }
+.plandevTool_targets label { display: flex; gap: 6px; align-items: center; cursor: pointer; padding: 2px 0; }
+.plandevTool_targets label span:nth-child(3) { margin-left: auto; }
+.plandevTool_candidates li { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 3px; }
+.plandevTool_candidates li.active { background: var(--color-a2, #333); }
+.plandevTool_candidates .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.plandevTool_candidates button.link { background: none; border: 0; color: inherit; text-align: left; cursor: pointer; flex: 1; padding: 2px 0; }
+.plandevTool_muted { color: var(--color-a6, #999); font-size: 12px; }
+.plandevTool_error { color: #ff6e6e; white-space: pre-wrap; font-size: 12px; margin: 6px 0; }
+.plandevTool_warn { color: #ffb74d; font-size: 12px; margin: 4px 0; }
+.plandevTool_result { border-top: 1px solid var(--color-a3, #444); margin-top: 8px; padding-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.plandevTool_result a { color: var(--color-mmgis); }
+.plandevTool table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.plandevTool th, .plandevTool td { text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--color-a2, #333); }
+.plandevTool tbody tr { cursor: pointer; }
+.plandevTool tbody tr:hover { background: var(--color-a2, #333); }
+.plandevTool .status.complete { color: #69f0ae; }
+.plandevTool .status.running { color: #ffd54f; }

@@ -1,0 +1,11 @@
+{
+    "name": "PlanDev",
+    "type": "tool",
+    "version": "0.1.0",
+    "defaultIcon": "calendar-clock",
+    "description": "Send Draw targets to PlanDev scheduling/simulation and view the candidate plans' results.",
+    "paths": {
+        "PlanDevTool": "./PlanDevTool"
+    },
+    "pluginDependencies": ["core/tools/Draw"]
+}

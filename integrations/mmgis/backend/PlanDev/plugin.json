@@ -1,0 +1,8 @@
+{
+    "name": "PlanDev",
+    "type": "backend",
+    "version": "0.1.0",
+    "description": "Server-side PlanDev adapter: turns MMGIS Draw targets into PlanDev candidate plans (duplicate → goal args → schedule → simulate) and returns results as GeoJSON + metrics.",
+    "routes": { "prefix": "/api/plandev", "auth": "draw.use (signed-in users)" },
+    "engines": { "mmgis": ">=5.0.0" }
+}

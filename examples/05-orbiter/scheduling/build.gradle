@@ -118,3 +118,8 @@ private static String getMainClassFromGeneratedFile(File file) {
   final trimmed = fileString.substring(index).replace(".java", "")
   return trimmed.replace("/", ".")
 }
+
+test {
+  // ScheduleTargetObservationsTest runs the closest-pass search against the shared kernel set.
+  environment("SPICE_DIRECTORY", "${rootDir}/spice-kernels")
+}

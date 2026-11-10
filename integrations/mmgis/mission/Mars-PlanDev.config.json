@@ -1,0 +1,75 @@
+{
+  "msv": {
+    "site": "Mars",
+    "view": [
+      15,
+      100,
+      4
+    ],
+    "radius": {
+      "major": "3396190",
+      "minor": "3396190"
+    },
+    "mapscale": ""
+  },
+  "look": {
+    "pagename": "Mars \u00b7 PlanDev demo",
+    "missionname": "Mars-PlanDev"
+  },
+  "time": {
+    "enabled": false
+  },
+  "layers": [
+    {
+      "name": "Basemap",
+      "type": "header",
+      "uuid": "6c1f1d7e-6c39-4b8e-9d4a-2f6f7f0b0001",
+      "expanded": true,
+      "sublayers": [
+        {
+          "name": "Viking MDIM 2.1 color mosaic",
+          "uuid": "6c1f1d7e-6c39-4b8e-9d4a-2f6f7f0b0002",
+          "type": "tile",
+          "visibility": true,
+          "sourceType": "url",
+          "url": "https://s3-eu-west-1.amazonaws.com/whereonmars.cartodb.net/viking_mdim21_global/{z}/{x}/{y}.png",
+          "tileformat": "tms",
+          "initialOpacity": 1,
+          "minZoom": 0,
+          "maxNativeZoom": 7,
+          "maxZoom": 12,
+          "description": "USGS Viking MDIM 2.1 global color mosaic (OpenPlanetary/whereonmars XYZ tiles). Planetocentric, east-positive longitude."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Draw",
+      "icon": "pencil",
+      "js": "DrawTool",
+      "variables": {
+        "intents": [
+          "ROI",
+          "Campaign",
+          "Traverse",
+          "Waypoint",
+          "Annotation",
+          "All Features"
+        ],
+        "defaultDrawClipping": "off",
+        "defaultPublicFilter": false,
+        "defaultYoursOnlyFilter": true,
+        "defaultOnFilter": false,
+        "leadsCanEditFileInfo": false,
+        "hoverLengthOnLines": false
+      }
+    },
+    {
+      "name": "PlanDev",
+      "icon": "calendar-clock",
+      "js": "PlanDevTool",
+      "variables": {}
+    }
+  ]
+}
