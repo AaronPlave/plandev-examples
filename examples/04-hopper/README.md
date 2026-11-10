@@ -26,10 +26,18 @@ ground contacts:
 - **Data** — two prioritized onboard storage bins (library `Data`), a 10 Gb default storage
   limit, and a 10 Kbps default playback rate (both `Configuration` parameters).
 
+- **Location** — `hopper.latitude` / `hopper.longitude` (Moon, planetocentric degrees, starting at the
+  `landingLatitude` / `landingLongitude` configuration) and `hopper.odometerKm`. They change only when a
+  `PerformHop` with a destination lands. Hop timing is **illustrative** — `HopModel`: 60 s + distance at
+  50 m/s — with no terrain, illumination or propellant model.
+
 ## What's new vs. 03-power-and-data
 
 - A real mission flavor with three activities that each drive **both** subsystems.
 - A **constraints** subproject (`MinBatterySOC`).
+- A **scheduling** subproject: `ScheduleHopTraverse` takes GeoJSON sites (in order, or nearest-next) and
+  plans a hop + rest + `TakePicture` per site from the simulated start location, using the same
+  `HopModel` as the simulation. Used by [integrations/mmgis](../../integrations/mmgis/).
 - **External events** (DSN ground contacts) and an **external dataset** (lunar Sun/Earth
   elevation) — the kinds of real-world inputs a mission planner schedules against.
 
@@ -38,7 +46,7 @@ ground contacts:
 | Activity | Power effect | Data effect |
 |----------|--------------|-------------|
 | `TakePicture` | camera ON for the duration | writes science data into an onboard bin at `dataRateBps` |
-| `PerformHop` | hop ON (1000 W) for the duration | writes telemetry data into an onboard bin |
+| `PerformHop` | hop ON (1000 W) for the duration; with `toSiteId` set, flies to (`toLatitude`, `toLongitude`) and the duration comes from `HopModel` | writes telemetry data into an onboard bin |
 | `Downlink` | telecom ON for the duration | spawns the library `PlaybackData`, then `DeleteData` on all bins when done |
 
 `TakePicture` and `PerformHop` use `Bucket.receive(rate, duration)` — a blocking call that
@@ -70,6 +78,9 @@ turns the bin's receive rate on, accumulates data for the duration, then turns i
 
 - `build/libs/hopper.jar` — the mission model; upload directly to PlanDev.
 - `constraints/build/libs/MinBatterySOC.jar` — the constraint procedure.
+- `scheduling/build/libs/ScheduleHopTraverse.jar` — the traverse goal
+  (`./gradlew :examples:04-hopper:scheduling:compileJava` then
+  `:examples:04-hopper:scheduling:buildSchedulingProcedureJar_ScheduleHopTraverse`).
 
 > `constraints:build` alone produces a thin `constraints.jar` without bundled dependencies —
 > not the artifact you upload. Use `buildAllConstraintProcedureJars` as shown above.
@@ -87,4 +98,4 @@ turns the bin's receive rate on, accumulates data for the duration, then turns i
 6. Load `views/lunar_elevation_view.json` and upload the external dataset to see the Sun/Earth
    elevation profile alongside the plan.
 
-No tests in this example — see [10-testing-patterns](../10-testing-patterns/).
+`./gradlew :examples:04-hopper:scheduling:test` covers the traverse ordering and `HopModel`; for model testing patterns see [10-testing-patterns](../10-testing-patterns/).

@@ -30,6 +30,10 @@ public class TakePicture {
   @Parameter
   public int bin = 0;
 
+  /** Site being imaged, for traceability only (does not change the effect model). */
+  @Parameter
+  public String siteId = "";
+
   @EffectModel
   public void run(Mission model) {
     // Turn on camera (power impact)

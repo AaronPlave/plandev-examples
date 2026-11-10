@@ -1,5 +1,6 @@
 package hopper;
 
+import gov.nasa.ammos.plandev.contrib.serialization.mappers.DoubleValueMapper;
 import gov.nasa.ammos.plandev.contrib.streamline.core.MutableResource;
 import gov.nasa.ammos.plandev.contrib.streamline.modeling.Registrar;
 import gov.nasa.ammos.plandev.contrib.streamline.modeling.discrete.Discrete;
@@ -37,6 +38,12 @@ public class Mission implements DataMissionModel {
   public final MutableResource<Discrete<Double>> maxVolume;
   public final Data data;
 
+  // Location (planetocentric latitude / east-positive longitude, degrees, Moon body-fixed). Changes
+  // only when a PerformHop with a destination lands; see HopModel for how hops are timed.
+  public final MutableResource<Discrete<Double>> latitude;
+  public final MutableResource<Discrete<Double>> longitude;
+  public final MutableResource<Discrete<Double>> odometerKm;
+
   public Mission(final gov.nasa.ammos.plandev.merlin.framework.Registrar registrar,
                  final Instant planStart,
                  final Configuration config) {
@@ -64,6 +71,14 @@ public class Mission implements DataMissionModel {
     this.maxVolume = discreteResource(config.initialMaxVolume());
     this.data = new Data(Optional.of(asPolynomial(dataRate)), 2, asPolynomial(maxVolume));
     data.registerStates(reg);
+
+    this.latitude = discreteResource(config.landingLatitude());
+    this.longitude = discreteResource(config.landingLongitude());
+    this.odometerKm = discreteResource(0.0);
+    final var dvm = new DoubleValueMapper();
+    reg.discrete("hopper.latitude", latitude, dvm);
+    reg.discrete("hopper.longitude", longitude, dvm);
+    reg.discrete("hopper.odometerKm", odometerKm, dvm);
   }
 
   @Override

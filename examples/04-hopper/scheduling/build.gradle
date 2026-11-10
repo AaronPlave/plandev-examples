@@ -1,0 +1,115 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+
+plugins {
+  id 'java'
+  id 'io.github.goooler.shadow' version '8.1.7'
+}
+
+java {
+  toolchain {
+    languageVersion = JavaLanguageVersion.of(21)
+  }
+}
+
+dependencies {
+  // Pull in mission model classes (HopModel is shared by the goal and the effect model)
+  implementation project(':examples:04-hopper')
+
+  // Procedural scheduling libraries
+  annotationProcessor "gov.nasa.ammos.plandev.procedural:processor:${plandevVersion}"
+  implementation "gov.nasa.ammos.plandev.procedural:scheduling:${plandevVersion}"
+  implementation "gov.nasa.ammos.plandev.procedural:timeline:${plandevVersion}"
+  implementation "gov.nasa.ammos.plandev.procedural:constraints:${plandevVersion}"
+
+  // Standard PlanDev deps
+  implementation "gov.nasa.ammos.plandev:merlin-framework:${plandevVersion}"
+  implementation "gov.nasa.ammos.plandev:contrib:${plandevVersion}"
+  implementation "gov.nasa.ammos.plandev:type-utils:${plandevVersion}"
+
+  // External deps
+  implementation 'com.google.code.gson:gson:2.8.7'
+}
+
+// Include mission model source so annotation processor can see types. The library sources are
+// also needed so the processor can generate mappers for the library @AutoValueMapper.Record
+// types (e.g. PowerModelSimConfig) referenced by the mission model's Configuration.
+sourceSets {
+  main {
+    java {
+      srcDir project(':examples:04-hopper').file('src/main/java')
+      srcDir project(':libraries:power').file('src/main/java')
+      srcDir project(':libraries:data').file('src/main/java')
+    }
+  }
+}
+
+tasks.register('buildAllSchedulingProcedureJars') {
+  group = 'SchedulingProcedureJars'
+
+  dependsOn "generateSchedulingProcedureJarTasks"
+  dependsOn {
+    tasks.findAll { task -> task.name.startsWith('buildSchedulingProcedureJar_') }
+  }
+}
+
+tasks.create("generateSchedulingProcedureJarTasks") {
+  group = 'SchedulingProcedureJars'
+
+  final proceduresDir = findFirstMatchingBuildDir("generated/procedures")
+
+  final procedureFiles = proceduresDir == null ? [] : (file(proceduresDir).listFiles() ?: []).toList()
+
+  // Nothing to package yet. This closure is evaluated at *configuration* time on every Gradle
+  // invocation -- including a clean `./gradlew build`, long before the annotation processor has
+  // emitted anything -- so it must not throw here. Defer the failure to execution time so that
+  // asking for the JARs and getting none is a hard error instead of a silent no-op.
+  if (procedureFiles.isEmpty()) {
+    doLast {
+      throw new GradleException(
+        "No generated scheduling procedures found under build/generated/sources.\n" +
+        "Procedures are discovered at configuration time, so this needs two invocations:\n" +
+        "  ./gradlew ${project.path}:compileJava\n" +
+        "  ./gradlew ${project.path}:buildAllSchedulingProcedureJars")
+    }
+    return
+  }
+
+  println "Generating jar tasks for the following procedures directory: ${proceduresDir}"
+
+  final files = procedureFiles
+
+  files.toList().each { file ->
+    final nameWithoutExtension = file.name.replace(".java", "")
+    final taskName = "buildSchedulingProcedureJar_${nameWithoutExtension}"
+
+    println "Generating ${taskName} task, which will build ${nameWithoutExtension}.jar"
+
+    tasks.create(taskName, ShadowJar) {
+      group = 'SchedulingProcedureJars'
+      configurations = [project.configurations.compileClasspath, project.configurations.runtimeClasspath]
+      from sourceSets.main.output
+      archiveBaseName = ""
+      archiveClassifier.set(nameWithoutExtension)
+      manifest {
+        attributes 'Main-Class': getMainClassFromGeneratedFile(file)
+      }
+      minimize()
+    }
+  }
+}
+
+private String findFirstMatchingBuildDir(String pattern) {
+  String found = null
+  final generatedDir = file("build/generated/sources")
+  generatedDir.mkdirs()
+  generatedDir.eachDirRecurse { dir -> if (dir.path.contains(pattern)) found = dir.path }
+  return found
+}
+
+private static String getMainClassFromGeneratedFile(File file) {
+  final fileString = file.toString()
+  final prefix = "build/generated/sources/annotationProcessor/java/main/"
+  final index = fileString.indexOf(prefix) + prefix.length()
+  final trimmed = fileString.substring(index).replace(".java", "")
+  return trimmed.replace("/", ".")
+}
