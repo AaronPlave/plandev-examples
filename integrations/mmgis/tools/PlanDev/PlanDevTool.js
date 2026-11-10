@@ -1,6 +1,8 @@
 // PlanDev tool: pick targets drawn with MMGIS's Draw tool, run a PlanDev candidate plan for them,
 // and show the scheduled/simulated results as map layers. All PlanDev calls go through the
-// /api/plandev backend plugin; this file never sees PlanDev credentials.
+// /api/plandev backend plugin; this file never sees PlanDev credentials. Mission-specific meaning
+// (goal parameters, metrics, table columns) comes from the backend's mission adapter, selected by
+// this tool's `mission` variable in the MMGIS mission config.
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
@@ -9,11 +11,15 @@ import L_ from '@basics/Layers_/Layers_'
 import Map_ from '@basics/Map_/Map_'
 import { Button, IconButton } from '@design/components'
 
+import { initEmbed } from './PlanDevEmbed'
 import './PlanDevTool.css'
+
+initEmbed()
 
 const root = () => (window.mmgisglobal.ROOT_PATH ? `${window.mmgisglobal.ROOT_PATH}/` : '')
 const COLORS = ['#00e5ff', '#ff9100', '#d500f9', '#76ff03', '#ffea00', '#ff1744']
-const layerUuid = (planId) => `plandev-candidate-${planId}`
+const layerUuid = (planId) => `plandev-plan-${planId}`
+const missionKey = () => L_.getToolVars('plandev')?.mission || 'mro'
 
 async function api(path, body) {
     const res = await fetch(`${root()}${path}`, {
@@ -28,21 +34,21 @@ async function api(path, body) {
 }
 
 // Survives close/reopen of the tool panel.
-const state = {
-    fileId: '',
-    checked: {},
-    params: { maxGroundDistanceKm: 100, observationDurationSec: 300, mode: 'HI_RES' },
-    label: '',
-    activeId: null,
-}
+const state = { fileId: '', checked: {}, params: null, label: '', activeId: null }
 
 function fmt(n, d = 1) {
     return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(d) : '—'
 }
 
-function delta(a, b, d = 1) {
-    if (typeof a !== 'number' || typeof b !== 'number') return ''
-    const v = a - b
+function cell(v, col) {
+    if (col.type === 'time') return typeof v === 'string' ? v.replace('T', ' ').slice(0, 19) : '—'
+    return typeof v === 'number' ? fmt(v, col.digits ?? 1) : v ?? '—'
+}
+
+function delta(m) {
+    if (typeof m.value !== 'number' || typeof m.base !== 'number') return ''
+    const v = m.value - m.base
+    const d = m.digits ?? 1
     return Math.abs(v) < 10 ** -d ? ' (= base)' : ` (${v > 0 ? '+' : ''}${v.toFixed(d)} vs base)`
 }
 
@@ -75,15 +81,15 @@ function anchor(g) {
     return null
 }
 
-function showLayer(c, colorIndex) {
-    const uuid = layerUuid(c.id)
+function showLayer(plan, colorIndex) {
+    const uuid = layerUuid(plan.id)
     if (L_.layers.data[uuid]) return Promise.resolve()
     const color = COLORS[colorIndex % COLORS.length]
     return window.mmgisAPI.addLayer({
-        name: `PlanDev ${c.id}: ${c.name}`,
+        name: `PlanDev ${plan.id}: ${plan.name}`,
         uuid,
         type: 'vector',
-        url: new URL(`${root()}api/plandev/candidates/${c.id}/geojson`, document.baseURI).href, // absolute: not under the mission folder
+        url: new URL(`${root()}api/plandev/plans/${plan.id}/geojson`, document.baseURI).href, // absolute: not under the mission folder
         controlled: false,
         visibility: true,
         initialOpacity: 1,
@@ -97,17 +103,18 @@ function showLayer(c, colorIndex) {
         legend: '',
         time: { enabled: false, type: 'requery', isRelative: true, current: '', start: '', end: '', startProp: '', endProp: '', format: '%Y-%m-%dT%H:%M:%SZ' },
         style: { className: 'plandevCandidate', color, fillColor: color, weight: 3, fillOpacity: 0.35, opacity: 1 },
-        description: `Scheduled & simulated results of PlanDev plan ${c.id}. Tracks are the simulated MRO sub-spacecraft ground track (subSCBodies_MARS_*).`,
-        variables: {},
+        description: `Scheduled & simulated results of PlanDev plan ${plan.id}, from its latest simulation dataset.`,
+        variables: { useKeyAsName: 'name' },
     })
 }
 
 function PlanDevPanel() {
-    const [config, setConfig] = useState(null)
+    const [mission, setMission] = useState(null)
+    const [uiUrl, setUiUrl] = useState(null)
     const [files, setFiles] = useState([])
     const [file, setFile] = useState(null)
     const [checked, setChecked] = useState(state.checked)
-    const [params, setParams] = useState(state.params)
+    const [params, setParams] = useState(state.params || {})
     const [label, setLabel] = useState(state.label)
     const [candidates, setCandidates] = useState([])
     const [activeId, setActiveId] = useState(state.activeId)
@@ -116,11 +123,18 @@ function PlanDevPanel() {
     const [error, setError] = useState(null)
     const [, force] = useState(0)
     const poll = useRef(null)
+    const key = missionKey()
 
-    const refreshCandidates = () => api('api/plandev/candidates').then(setCandidates)
+    const refreshCandidates = () => api(`api/plandev/missions/${key}/candidates`).then(setCandidates)
 
     useEffect(() => {
-        api('api/plandev/config').then(setConfig).catch((e) => setError(e.message))
+        api(`api/plandev/missions/${key}/config`)
+            .then((c) => {
+                setMission(c)
+                if (!state.params) setParams(Object.fromEntries(c.params.map((p) => [p.key, p.default])))
+            })
+            .catch((e) => setError(e.message))
+        api('api/plandev/config').then((c) => setUiUrl(c.plandevUiUrl)).catch(() => {})
         refreshCandidates().catch((e) => setError(e.message))
         api('api/files/getfiles', { mission: L_.mission })
             .then((fs) => setFiles(fs.filter((f) => !f.is_master)))
@@ -139,21 +153,20 @@ function PlanDevPanel() {
         Object.assign(state, { checked, params, label, activeId })
     }, [checked, params, label, activeId])
 
-    // Poll the active candidate until PlanDev says it is finished.
+    // Poll the active plan until PlanDev says it is finished.
     useEffect(() => {
         clearTimeout(poll.current)
         if (activeId == null) return
         let stop = false
         const tick = async () => {
             try {
-                const c = await api(`api/plandev/candidates/${activeId}`)
+                const c = await api(`api/plandev/plans/${activeId}`)
                 if (stop) return
                 setActive(c)
                 if (c.status === 'running') poll.current = setTimeout(tick, 3000)
                 else {
                     refreshCandidates()
-                    const L = L_.layers.data[layerUuid(activeId)]
-                    if (L) window.mmgisAPI.reloadLayer(layerUuid(activeId), true, true, true)
+                    if (L_.layers.data[layerUuid(activeId)]) window.mmgisAPI.reloadLayer(layerUuid(activeId), true, true, true)
                 }
             } catch (e) {
                 if (!stop) setError(e.message)
@@ -173,7 +186,8 @@ function PlanDevPanel() {
         setFile({ ...meta, geojson: body.geojson })
     }
 
-    const selectable = (file?.geojson?.features || []).filter((f) => ['Point', 'Polygon'].includes(f.geometry?.type))
+    const types = mission?.targets?.types || ['Point', 'Polygon']
+    const selectable = (file?.geojson?.features || []).filter((f) => types.includes(f.geometry?.type))
     const selected = selectable.filter((f) => checked[`${file.id}-${f.properties._.id}`])
 
     async function run() {
@@ -181,7 +195,7 @@ function PlanDevPanel() {
         setError(null)
         try {
             const targets = { type: 'FeatureCollection', features: selected.map((f) => toTarget(file, f)) }
-            const { planId } = await api('api/plandev/candidates', { targets, params, label })
+            const { planId } = await api(`api/plandev/missions/${key}/candidates`, { targets, params, label })
             await refreshCandidates()
             setActive(null)
             setActiveId(planId)
@@ -192,28 +206,41 @@ function PlanDevPanel() {
         }
     }
 
-    function toggleLayer(c, i) {
-        const uuid = layerUuid(c.id)
+    function toggleLayer(plan, i) {
+        const uuid = layerUuid(plan.id)
         if (L_.layers.data[uuid]) window.mmgisAPI.removeLayer(uuid)
-        else showLayer(c, i).catch((e) => setError(String(e)))
+        else
+            showLayer(plan, i)
+                .then(() => {
+                    // Fit once the layer's GeoJSON has arrived.
+                    const fit = (n) => {
+                        const b = L_.layers.layer[uuid]?.getBounds?.()
+                        if (b?.isValid()) Map_.map.fitBounds(b, { padding: [40, 40], maxZoom: 9 })
+                        else if (n > 0) setTimeout(() => fit(n - 1), 300)
+                    }
+                    fit(10)
+                })
+                .catch((e) => setError(String(e)))
         setTimeout(() => force((n) => n + 1), 300)
     }
 
-    function zoomTo(obs) {
-        const t = active?.inputs?.targets?.features?.find((f) => String(f.id) === obs.targetId)
-        const a = t && anchor(t.geometry)
+    function zoomTo(row) {
+        const f = active?.features?.find((x) => x.properties.spanId === row.spanId && x.properties.primary)
+        const g = f?.geometry
+        const a = g && (g.type === 'LineString' ? g.coordinates[Math.floor(g.coordinates.length / 2)] : g.type === 'Point' ? g.coordinates : null)
         if (a) Map_.map.setView([a[1], a[0]], Math.max(Map_.map.getZoom(), 7))
     }
 
-    const reason = active?.scheduling?.reason || active?.simulation?.reason
-    const base = config?.basePlan
+    const base = mission?.basePlan
+    const plans = base ? [{ id: base.id, name: `${base.name} (base)` }, ...candidates] : candidates
+    const reason = active?.scheduling?.status === 'failed' ? active.scheduling.reason : active?.simulation?.reason
 
     return (
         <div className='plandevTool'>
             <div className='mmgisToolHeader'>
                 <div>
                     <div>
-                        <div className='mmgisToolTitle'>PlanDev</div>
+                        <div className='mmgisToolTitle'>PlanDev · {mission?.mission?.label ?? key}</div>
                     </div>
                     <div>
                         <IconButton size='sm' onClick={() => ToolController_.closeActiveTool()} title='Close Tool'>
@@ -234,16 +261,20 @@ function PlanDevPanel() {
                         </option>
                     ))}
                 </select>
-                {file && selectable.length === 0 && <p className='plandevTool_muted'>No points or polygons in this file. Draw some with the Draw tool.</p>}
+                {file && selectable.length === 0 && <p className='plandevTool_muted'>No {types.join(' or ')} features in this file. Draw some with the Draw tool.</p>}
                 <ul className='plandevTool_targets'>
                     {selectable.map((f) => {
                         const k = `${file.id}-${f.properties._.id}`
                         const a = anchor(f.geometry)
+                        const n = mission?.targets?.ordered && checked[k] ? selected.indexOf(f) + 1 : null
                         return (
                             <li key={k}>
                                 <label>
                                     <input type='checkbox' checked={!!checked[k]} onChange={(e) => setChecked({ ...checked, [k]: e.target.checked })} />
-                                    <span>{featureLabel(file, f)}</span>
+                                    <span>
+                                        {n ? `${n}. ` : ''}
+                                        {featureLabel(file, f)}
+                                    </span>
                                     <span className='plandevTool_muted'>
                                         {f.geometry.type} {fmt(a[1], 3)}°, {fmt(a[0], 3)}°E
                                     </span>
@@ -252,33 +283,38 @@ function PlanDevPanel() {
                         )
                     })}
                 </ul>
-                <p className='plandevTool_muted'>Mars, planetocentric latitude / east longitude (deg). Polygons use their vertex mean.</p>
+                <p className='plandevTool_muted'>
+                    {mission?.conventions?.body}: {mission?.conventions?.coordinates}.{mission?.targets?.ordered ? ' Ticked targets are sent in the order they appear in the Draw file.' : ''}
+                </p>
 
                 <h3>2 · Schedule on a copy of “{base?.name ?? '…'}”</h3>
                 <div className='plandevTool_grid'>
-                    <label>Max ground distance (km)</label>
-                    <input type='number' min='1' max='2000' value={params.maxGroundDistanceKm} onChange={(e) => setParams({ ...params, maxGroundDistanceKm: e.target.value })} />
-                    <label>Observation duration (s)</label>
-                    <input type='number' min='10' max='3600' value={params.observationDurationSec} onChange={(e) => setParams({ ...params, observationDurationSec: e.target.value })} />
-                    <label>Radar mode</label>
-                    <select value={params.mode} onChange={(e) => setParams({ ...params, mode: e.target.value })}>
-                        {(config?.modes || ['HI_RES']).map((m) => (
-                            <option key={m}>{m}</option>
-                        ))}
-                    </select>
+                    {(mission?.params || []).flatMap((p) => [
+                        <label key={`${p.key}-l`}>
+                            {p.label}
+                            {p.unit ? ` (${p.unit})` : ''}
+                        </label>,
+                        p.type === 'enum' ? (
+                            <select key={p.key} value={params[p.key] ?? p.default} onChange={(e) => setParams({ ...params, [p.key]: e.target.value })}>
+                                {p.options.map((o) => (
+                                    <option key={o}>{o}</option>
+                                ))}
+                            </select>
+                        ) : (
+                            <input key={p.key} type='number' min={p.min} max={p.max} value={params[p.key] ?? p.default} onChange={(e) => setParams({ ...params, [p.key]: e.target.value })} />
+                        ),
+                    ])}
                     <label>Label (optional)</label>
                     <input type='text' maxLength={60} value={label} onChange={(e) => setLabel(e.target.value)} />
                 </div>
-                <p className='plandevTool_muted'>
-                    Goal ScheduleTargetObservations: for each target, find the closest MRO sub-spacecraft pass in the plan window and schedule a TakeRadarObservation there. Not a footprint-coverage check.
-                </p>
-                <Button variant='primary' disabled={busy || selected.length === 0 || !config} onClick={run}>
+                <p className='plandevTool_muted'>{mission?.mission?.help}</p>
+                <Button variant='primary' disabled={busy || selected.length === 0 || !mission} onClick={run}>
                     {busy ? 'Creating…' : `Create candidate for ${selected.length} target${selected.length === 1 ? '' : 's'}`}
                 </Button>
 
-                <h3>3 · Candidates</h3>
+                <h3>3 · Plans</h3>
                 <ul className='plandevTool_candidates'>
-                    {candidates.map((c, i) => (
+                    {plans.map((c, i) => (
                         <li key={c.id} className={c.id === activeId ? 'active' : ''}>
                             <span className='swatch' style={{ background: COLORS[i % COLORS.length] }} />
                             <button className='link' onClick={() => setActiveId(c.id)}>
@@ -289,7 +325,7 @@ function PlanDevPanel() {
                             </IconButton>
                         </li>
                     ))}
-                    {candidates.length === 0 && <li className='plandevTool_muted'>None yet.</li>}
+                    {candidates.length === 0 && <li className='plandevTool_muted'>No candidates yet.</li>}
                 </ul>
 
                 {active && (
@@ -302,10 +338,16 @@ function PlanDevPanel() {
                             {active.status === 'running' && ' (PlanDev scheduling → simulation)'}
                         </div>
                         <div className='plandevTool_muted'>
-                            Inputs: {active.inputs.targets.features.length} target(s), ≤{active.inputs.maxGroundDistanceKm} km, {active.inputs.observationDurationSec}s, {active.inputs.mode}
+                            Plan revision {active.provenance.planRevision} · simulation dataset {active.provenance.simulationDatasetId ?? '—'}
+                            {active.provenance.simulatedPlanRevision != null && active.provenance.simulatedPlanRevision !== active.provenance.planRevision && ' (simulated an older revision)'}
                         </div>
-                        {config?.plandevUiUrl && (
-                            <a href={`${config.plandevUiUrl}/plans/${active.plan.id}`} target='_blank' rel='noreferrer'>
+                        {active.inputs && (
+                            <div className='plandevTool_muted'>
+                                Inputs: {active.inputs.targets.features.length} target(s); {Object.entries(active.inputs.params).map(([k, v]) => `${k}=${v}`).join(', ')}
+                            </div>
+                        )}
+                        {uiUrl && (
+                            <a href={`${uiUrl}/plans/${active.plan.id}`} target='_blank' rel='noreferrer'>
                                 Open plan in PlanDev ↗
                             </a>
                         )}
@@ -313,51 +355,52 @@ function PlanDevPanel() {
 
                         {active.status === 'complete' && (
                             <>
-                                <h4>Observations (simulated)</h4>
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Target</th>
-                                            <th>Start (UTC)</th>
-                                            <th>Min dist km</th>
-                                            <th>SOC end %</th>
-                                            <th>Data Gbit</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {active.observations.map((o) => (
-                                            <tr key={o.directiveId} onClick={() => zoomTo(o)} title={`directive ${o.directiveId}, ${o.mode}, peak load ${fmt(o.peakLoadW, 0)} W`}>
-                                                <td>{o.targetName}</td>
-                                                <td>{o.start.replace('T', ' ').slice(0, 19)}</td>
-                                                <td>{fmt(o.minSampledDistanceKm)}</td>
-                                                <td>
-                                                    {fmt(o.socAtEnd)}
-                                                    <span className='plandevTool_muted'> (base {fmt(o.baseSocAtEnd)})</span>
-                                                </td>
-                                                <td>{fmt(o.dataWrittenGbit, 2)}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                                {active.inputs.targets.features
-                                    .filter((f) => !active.observations.some((o) => o.targetId === String(f.id)))
-                                    .map((f) => (
-                                        <div key={f.id} className='plandevTool_warn'>
-                                            No pass within {active.inputs.maxGroundDistanceKm} km of “{f.properties?.name ?? f.id}” — not scheduled.
-                                        </div>
-                                    ))}
+                                {active.table && active.table.rows.length > 0 && (
+                                    <>
+                                        <h4>Activities (simulated)</h4>
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    {active.table.columns.map((c) => (
+                                                        <th key={c.key}>
+                                                            {c.label}
+                                                            {c.unit ? ` ${c.unit}` : ''}
+                                                        </th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {active.table.rows.map((r) => (
+                                                    <tr key={r.spanId} onClick={() => zoomTo(r)} title={`span ${r.spanId}, directive ${r.directiveId}`}>
+                                                        {active.table.columns.map((c) => (
+                                                            <td key={c.key}>{cell(r[c.key], c)}</td>
+                                                        ))}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </>
+                                )}
                                 <h4>Plan metrics (simulated)</h4>
                                 <ul className='plandevTool_metrics'>
-                                    <li>Min battery SOC: {fmt(active.metrics?.minBatterySOC)}%{delta(active.metrics?.minBatterySOC, active.baseMetrics?.minBatterySOC)}</li>
-                                    <li>
-                                        Final onboard data: {fmt(active.metrics?.finalOnboardVolumeGbit, 2)} Gbit
-                                        {delta(active.metrics?.finalOnboardVolumeGbit, active.baseMetrics?.finalOnboardVolumeGbit, 2)}
-                                    </li>
+                                    {active.summary.map((m) => (
+                                        <li key={m.key}>
+                                            {m.name}: {fmt(m.value, m.digits ?? 1)} {m.unit}
+                                            <span className='plandevTool_muted'>{delta(m)}</span>
+                                        </li>
+                                    ))}
                                 </ul>
-                                <p className='plandevTool_muted'>
-                                    Min dist: closest 30 s sample of the simulated sub-spacecraft track (subSCBodies_MARS_*) during the observation. SOC: cbebattery.batterySOC. Data: scBin volume written during
-                                    the observation.
-                                </p>
+                                {active.constraints?.length > 0 && <h4>Constraints</h4>}
+                                {(active.constraints || []).map((c) => (
+                                    <div key={c.name} className={`plandevTool_constraint ${c.windows.length || c.errors.length ? 'bad' : 'ok'}`}>
+                                        {c.name}: {c.errors.length ? c.errors.join('; ') : c.windows.length ? `${c.windows.length} violation window(s), first ${new Date(c.windows[0].startMs).toISOString().slice(11, 19)} UTC` : 'no violations'}
+                                    </div>
+                                ))}
+                                {active.notes.map((n) => (
+                                    <div key={n.text} className={n.warn ? 'plandevTool_warn' : 'plandevTool_muted'}>
+                                        {n.text}
+                                    </div>
+                                ))}
                             </>
                         )}
                     </div>

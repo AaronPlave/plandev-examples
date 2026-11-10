@@ -1,0 +1,80 @@
+{
+  "msv": {
+    "site": "Moon",
+    "view": [
+      7.45,
+      -59.1,
+      9
+    ],
+    "radius": {
+      "major": "1737400",
+      "minor": "1737400"
+    },
+    "mapscale": ""
+  },
+  "look": {
+    "pagename": "Moon \u00b7 PlanDev demo",
+    "missionname": "Moon-PlanDev"
+  },
+  "time": {
+    "enabled": false
+  },
+  "layers": [
+    {
+      "name": "Basemap",
+      "type": "header",
+      "uuid": "7d2a2e8f-1f40-4c0e-9a51-3c7a8b0c0001",
+      "expanded": true,
+      "sublayers": [
+        {
+          "name": "Moon hillshaded albedo (OpenPlanetaryMap)",
+          "uuid": "7d2a2e8f-1f40-4c0e-9a51-3c7a8b0c0002",
+          "type": "tile",
+          "visibility": true,
+          "sourceType": "url",
+          "url": "https://s3.amazonaws.com/opmbuilder/301_moon/tiles/w/hillshaded-albedo/{z}/{x}/{y}.png",
+          "tileformat": "tms",
+          "initialOpacity": 1,
+          "minZoom": 0,
+          "maxNativeZoom": 6,
+          "maxZoom": 12,
+          "description": "OpenPlanetaryMap lunar hillshaded albedo (LRO WAC + LOLA), native to zoom 6 (~0.7 km/px). Planetocentric, east-positive longitude."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Draw",
+      "icon": "pencil",
+      "js": "DrawTool",
+      "variables": {
+        "intents": [
+          "ROI",
+          "Campaign",
+          "Traverse",
+          "Waypoint",
+          "Annotation",
+          "All Features"
+        ],
+        "defaultDrawClipping": "off",
+        "defaultPublicFilter": false,
+        "defaultYoursOnlyFilter": true,
+        "defaultOnFilter": false,
+        "leadsCanEditFileInfo": false,
+        "hoverLengthOnLines": false
+      }
+    },
+    {
+      "name": "PlanDev",
+      "icon": "calendar-clock",
+      "js": "PlanDevTool",
+      "variables": {
+        "mission": "hopper",
+        "embedOrigins": [
+          "http://localhost:3111"
+        ]
+      }
+    }
+  ]
+}

@@ -69,7 +69,12 @@
       "name": "PlanDev",
       "icon": "calendar-clock",
       "js": "PlanDevTool",
-      "variables": {}
+      "variables": {
+        "mission": "mro",
+        "embedOrigins": [
+          "http://localhost:3111"
+        ]
+      }
     }
   ]
 }

@@ -23,3 +23,8 @@
 .plandevTool tbody tr:hover { background: var(--color-a2, #333); }
 .plandevTool .status.complete { color: #69f0ae; }
 .plandevTool .status.running { color: #ffd54f; }
+.plandevEmbedPill { position: absolute; left: 50%; transform: translateX(-50%); bottom: 34px; z-index: 2000; max-width: min(720px, 90vw);
+  background: rgba(20, 20, 24, 0.88); color: #eee; font: 12px/1.4 monospace; padding: 6px 10px; border-radius: 4px; white-space: pre-wrap; pointer-events: none; }
+.plandevTool_constraint { font-size: 12px; margin: 2px 0; }
+.plandevTool_constraint.ok { color: #69f0ae; }
+.plandevTool_constraint.bad { color: #ff6e6e; }

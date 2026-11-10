@@ -2,7 +2,9 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const w = require('../lib/workflow')
+const w = require('../lib/util')
+const mro = require('../missions/mro')
+const hopper = require('../missions/hopper')
 
 test('intervalToSec parses Postgres interval text', () => {
     assert.equal(w.intervalToSec('144:00:00'), 518400)
@@ -62,7 +64,7 @@ test('splitAtAntimeridian breaks a wrapping track', () => {
 })
 
 test('greatCircleKm on the Mars mean sphere', () => {
-    assert.ok(Math.abs(w.greatCircleKm(0, 0, 0, 1) - 59.157) < 0.01)
+    assert.ok(Math.abs(w.greatCircleKm(0, 0, 0, 1, 3389.5) - 59.157) < 0.01)
 })
 
 test('normalizeTargets validates at the trust boundary', () => {
@@ -91,4 +93,30 @@ test('normalizeTargets validates at the trust boundary', () => {
     )
     const dup = { type: 'Feature', id: 'x', geometry: { type: 'Point', coordinates: [0, 0] } }
     assert.throws(() => w.normalizeTargets({ type: 'FeatureCollection', features: [dup, dup] }), /duplicate/)
+})
+
+test('normalizeTargets honours a mission\'s geometry types and preserves order', () => {
+    const fc = (geoms) => ({ type: 'FeatureCollection', features: geoms.map((g, i) => ({ id: `s${i}`, geometry: g })) })
+    const pts = w.normalizeTargets(fc([{ type: 'Point', coordinates: [1, 1] }, { type: 'Point', coordinates: [0, 0] }]), hopper.targets)
+    assert.deepEqual(pts.features.map((f) => f.id), ['s0', 's1'])
+    assert.throws(() => w.normalizeTargets(fc([{ type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] }]), hopper.targets), /only Point/)
+})
+
+test('checkParams validates against the adapter spec and fills defaults', () => {
+    assert.deepEqual(w.checkParams(hopper.params, { order: 'NEAREST_NEXT' }), { order: 'NEAREST_NEXT', restAfterHopMin: 30, pictureDurationSec: 120, startAfterMin: 60 })
+    assert.throws(() => w.checkParams(hopper.params, { order: 'RANDOM' }), /order must be one of/)
+    assert.throws(() => w.checkParams(mro.params, { maxGroundDistanceKm: 0 }), /maxGroundDistanceKm/)
+})
+
+test('adapters round-trip goal arguments (durations in microseconds)', () => {
+    const fc = { type: 'FeatureCollection', features: [] }
+    for (const [a, p] of [
+        [mro, { maxGroundDistanceKm: 100, observationDurationSec: 300, mode: 'HI_RES' }],
+        [hopper, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 120, startAfterMin: 60 }],
+    ]) {
+        const args = a.goalArguments(fc, p)
+        assert.deepEqual(a.inputsFromGoalArguments(args), { targets: fc, params: p })
+    }
+    assert.equal(mro.goalArguments(fc, { maxGroundDistanceKm: 1, observationDurationSec: 300, mode: 'HI_RES' }).observationDuration, 300e6)
+    assert.equal(hopper.goalArguments(fc, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 1, startAfterMin: 0 }).restAfterHop, 1800e6)
 })

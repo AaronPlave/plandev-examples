@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 // One-time MMGIS setup for the PlanDev demo: create the first SuperAdmin (if none) and the
-// Mars-PlanDev mission (Viking basemap + Draw + PlanDev tools). Uses MMGIS's own HTTP APIs.
+// Mars-PlanDev and Moon-PlanDev missions (basemap + Draw + PlanDev tools). Uses MMGIS's own HTTP APIs.
 //
 //   MMGIS_URL=http://localhost:8888 MMGIS_ADMIN=admin MMGIS_ADMIN_PASSWORD='...' MMGIS_SETUP_CODE=... \
 //     node scripts/setup-mmgis.js
 'use strict'
 const path = require('path')
-const config = require(path.join(__dirname, '../mission/Mars-PlanDev.config.json'))
 
 const URL_ = (process.env.MMGIS_URL || 'http://localhost:8888').replace(/\/$/, '')
-const MISSION = 'Mars-PlanDev'
+const MISSIONS = ['Mars-PlanDev', 'Moon-PlanDev']
 const user = process.env.MMGIS_ADMIN || 'admin'
 const pass = process.env.MMGIS_ADMIN_PASSWORD
 let cookie = ''
@@ -34,6 +33,14 @@ async function post(p, body) {
     }
     const login = await post('/api/users/login', { username: user, password: pass })
     if (login.status !== 'success') throw new Error(`login failed: ${login.message}`)
+    for (const MISSION of MISSIONS) await addMission(MISSION, require(path.join(__dirname, `../mission/${MISSION}.config.json`)))
+    console.log(`\nOpen ${URL_.replace(/:8888$/, ':8889')}/?mission=${MISSIONS[0]}`)
+})().catch((e) => {
+    console.error(e.message)
+    process.exit(1)
+})
+
+async function addMission(MISSION, config) {
     const r = await post('/api/configure/add', { mission: MISSION, config, makedir: true })
     console.log(`add ${MISSION}:`, r.status, r.message || '')
     if (r.status !== 'success') {
@@ -46,8 +53,4 @@ async function post(p, body) {
         const u = await post('/api/configure/upsert', { mission: MISSION, config: next })
         console.log(`upsert ${MISSION}:`, u.status, u.message || '')
     }
-    console.log(`\nOpen ${URL_.replace(/:8888$/, ':8889')}/?mission=${MISSION}`)
-})().catch((e) => {
-    console.error(e.message)
-    process.exit(1)
-})
+}
