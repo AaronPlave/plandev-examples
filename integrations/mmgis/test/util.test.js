@@ -120,3 +120,41 @@ test('adapters round-trip goal arguments (durations in microseconds)', () => {
     assert.equal(mro.goalArguments(fc, { maxGroundDistanceKm: 1, observationDurationSec: 300, mode: 'HI_RES' }).observationDuration, 300e6)
     assert.equal(hopper.goalArguments(fc, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 1, startAfterMin: 0 }).restAfterHop, 1800e6)
 })
+
+test('pointInRing / segmentHitsRing (planar lon/lat)', () => {
+    const sq = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+    assert.equal(w.pointInRing([0.5, 0.5], sq), true)
+    assert.equal(w.pointInRing([1.5, 0.5], sq), false)
+    assert.equal(w.segmentHitsRing([-1, 0.5], [2, 0.5], sq), true) // crosses, both ends outside
+    assert.equal(w.segmentHitsRing([-1, 2], [2, 2], sq), false)
+})
+
+test('hopper evaluate: visits, images and region crossings from simulated landings only', async () => {
+    // Start at (0,0); a hop lands at (1,0) at t=100 s; an image at t=200 s there.
+    const seg = (t, v) => ({ t, dynamics: v, is_gap: false })
+    const ops = {
+        profiles: async () => ({ 'hopper.latitude': [seg(0, 0), seg(100, 0)], 'hopper.longitude': [seg(0, 0), seg(100, 1)] }),
+        spans: async (_, [type]) =>
+            type === 'PerformHop'
+                ? [{ spanId: 1, directiveId: 1, startSec: 40, endSec: 100, arguments: { toSiteId: 'a' } }]
+                : [{ spanId: 2, directiveId: 2, startSec: 200, endSec: 260, arguments: { siteId: 'a' } }],
+    }
+    const fc = w.normalizeTargets(
+        {
+            type: 'FeatureCollection',
+            features: [
+                { id: 'near', geometry: { type: 'Point', coordinates: [1.001, 0] } },
+                { id: 'far', geometry: { type: 'Point', coordinates: [3, 0] } },
+                { id: 'zone', geometry: { type: 'Polygon', coordinates: [[[0.4, -0.1], [0.6, -0.1], [0.6, 0.1], [0.4, 0.1], [0.4, -0.1]]] } },
+            ],
+        },
+        hopper.evaluation.targets,
+    )
+    const r = await hopper.evaluate({ ops, dataset: { dataset_id: 1 }, durationSec: 1000, iso: (s) => `t${s}` }, fc, { radiusKm: 1 })
+    const by = Object.fromEntries(r.table.rows.map((x) => [x.name, x]))
+    assert.equal(by.near.result, 'visited, imaged')
+    assert.equal(by.near.when, 't100')
+    assert.equal(by.far.result, 'not visited')
+    assert.match(by.zone.result, /1 leg\(s\) cross/)
+    assert.deepEqual(r.summary.map((m) => m.value), [1])
+})

@@ -117,6 +117,32 @@ function anchor(geometry) {
     return [ring.reduce((a, p) => a + p[0], 0) / ring.length, ring.reduce((a, p) => a + p[1], 0) / ring.length]
 }
 
+// Planar lon/lat geometry: fine for regions a few degrees across away from the poles and antimeridian,
+// which is what a site-scale evaluation draws. ponytail: spherical tests if regions get continental.
+
+/** Ray-casting point-in-polygon on the outer ring ([lon, lat] pairs). */
+function pointInRing([x, y], ring) {
+    let inside = false
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i]
+        const [xj, yj] = ring[j]
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
+    }
+    return inside
+}
+
+/** Whether segment a–b touches the polygon ring: an endpoint inside, or crossing an edge. */
+function segmentHitsRing(a, b, ring) {
+    if (pointInRing(a, ring) || pointInRing(b, ring)) return true
+    const cross = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+    for (let i = 0; i < ring.length - 1; i++) {
+        const c = ring[i]
+        const d = ring[i + 1]
+        if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) return true
+    }
+    return false
+}
+
 /** Validate a numeric parameter against an adapter's param spec. */
 function checkParams(spec, input) {
     const out = {}
@@ -145,4 +171,6 @@ module.exports = {
     normalizeTargets,
     anchor,
     checkParams,
+    pointInRing,
+    segmentHitsRing,
 }

@@ -23,8 +23,25 @@ const state = {
     marker: null,
     window: null,
     pill: null,
+    pillText: null,
+    follow: false, // pan to keep the position marker in view; off so the map can be explored freely
+    fittedPlanId: null, // fit the map once per plan, not on every dataset/revision change
     applyingSelection: null, // feature selected because PlanDev asked; don't echo it back
 }
+
+const missionKey = () => L_.getToolVars('plandev')?.mission || null
+
+/** For the PlanDev tool panel: whether MMGIS is embedded in a PlanDev plan, and that plan's context. */
+export function embedded() {
+    return state.origin ? { ctx: state.ctx, view: state.view } : null
+}
+
+/** Ask PlanDev to open another plan (keeps PlanDev's current view). */
+export function openPlanInPlanDev(planId) {
+    if (state.origin) send({ type: 'openPlan', planId })
+}
+
+const announce = () => document.dispatchEvent(new CustomEvent('plandev:embed', { detail: embedded() }))
 
 function send(msg) {
     window.parent.postMessage({ protocol: PROTOCOL, ...msg }, state.origin)
@@ -45,22 +62,26 @@ async function loadView(planId, simulationDatasetId) {
     state.loading = key
     pill(`Loading plan ${planId}…`)
     try {
-        const q = simulationDatasetId != null ? `?simulationDatasetId=${simulationDatasetId}` : ''
-        const view = await api(`api/plandev/plans/${planId}${q}`)
+        const q = new URLSearchParams({ ...(simulationDatasetId != null && { simulationDatasetId }), ...(missionKey() && { mission: missionKey() }) })
+        const view = await api(`api/plandev/plans/${planId}?${q}`)
         if (state.loading !== key) return // superseded by a newer context
         state.view = view
         state.key = key
         await showFeatures(view)
         applyTime()
         applySelection(true)
-        fitTo(view)
+        // Fit once per plan, unless the embedding URL pins the map view (MMGIS mapLat/mapLon/mapZoom).
+        if (state.fittedPlanId !== planId && !new URLSearchParams(location.search).has('mapLat')) fitTo(view)
+        state.fittedPlanId = planId
+        announce()
     } catch (e) {
         if (state.loading === key) {
             state.view = null
             state.key = key
             if (L_.layers.layer[LAYER]) L_.clearVectorLayer(LAYER)
             clearPosition()
-            pill(`Plan ${planId}: ${e.message}`)
+            pill(/unauthori[sz]ed/i.test(e.message) ? `Sign in to MMGIS (top right) to show PlanDev plan ${planId} here.` : `Plan ${planId}: ${e.message}`)
+            announce()
         }
     } finally {
         if (state.loading === key) state.loading = null
@@ -136,7 +157,11 @@ function applyTime() {
     const view = state.view
     const t = state.ctx.timeMs
     const p = view?.position
-    const where = view ? `Plan ${view.plan.id} rev ${view.provenance.planRevision} · sim dataset ${view.provenance.simulationDatasetId ?? '—'} · ${view.status}` : ''
+    const from = view?.derivedFrom ? ` (derived from #${view.derivedFrom.id})` : ''
+    const where = view
+        ? `Plan ${view.plan.id}${from} rev ${view.provenance.planRevision} · sim dataset ${view.provenance.simulationDatasetId ?? '—'} · ${view.status}` +
+          (view.stale ? ` — simulated rev ${view.provenance.simulatedPlanRevision}, not the current plan` : '')
+        : ''
     if (!p || !p.samples.length || t == null) {
         clearPosition()
         return pill(view ? `${where}${t == null ? ' · no time cursor set in PlanDev' : ''}` : 'Waiting for PlanDev…')
@@ -152,7 +177,7 @@ function applyTime() {
         state.marker = window.L.circleMarker(ll, { radius: 8, color: '#fff', weight: 2, fillColor: '#ff1744', fillOpacity: 1, interactive: false }).addTo(Map_.map)
     } else state.marker.setLatLng(ll)
     state.marker.bringToFront()
-    if (!Map_.map.getBounds().pad(-0.05).contains(ll)) Map_.map.panTo(ll, { animate: false }) // follow, without changing zoom
+    if (state.follow && !Map_.map.getBounds().pad(-0.05).contains(ll)) Map_.map.panTo(ll, { animate: false }) // follow, without changing zoom
 
     if (p.trackWindowMs) {
         // The sampled track around the cursor, so the current point reads against the trajectory.
@@ -236,9 +261,17 @@ function pill(text) {
     if (!state.pill) {
         state.pill = document.createElement('div')
         state.pill.className = 'plandevEmbedPill'
+        state.pillText = document.createElement('div')
+        const follow = document.createElement('label')
+        follow.innerHTML = '<input type="checkbox"> follow position'
+        follow.firstChild.onchange = (e) => {
+            state.follow = e.target.checked
+            applyTime()
+        }
+        state.pill.append(state.pillText, follow)
         document.body.appendChild(state.pill)
     }
-    state.pill.textContent = text
+    state.pillText.textContent = text
 }
 
 // ---------- wiring ----------
@@ -249,7 +282,10 @@ function onMessage(e) {
     if (!m || m.protocol !== PROTOCOL || m.type !== 'context') return
     const prev = state.ctx
     state.ctx = m
-    if (m.planId == null) return pill('No plan open in PlanDev.')
+    if (m.planId == null) {
+        announce()
+        return pill('No plan open in PlanDev.')
+    }
     if (m.planId !== prev.planId || m.simulationDatasetId !== prev.simulationDatasetId || m.planRevision !== prev.planRevision) {
         // A new revision may not have been simulated yet; reload so the status says so.
         state.key = m.planRevision !== prev.planRevision ? null : state.key

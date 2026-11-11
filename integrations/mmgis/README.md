@@ -1,8 +1,15 @@
 # MMGIS ↔ PlanDev integration (prototype)
 
-Use **MMGIS** to draw spatial targets. **PlanDev** then plans and simulates a candidate plan for them, using a mission's own procedural goal. Results appear in MMGIS:
+Work on **existing PlanDev plans** from a map. In **MMGIS**, pick a plan (or follow the one PlanDev has open), then:
 
-- **Standalone:** the MMGIS PlanDev tool creates and compares candidates.
+- **Inspect** its simulated spatial result, metrics and constraint results, compared with the plan it was derived from.
+- **Evaluate** it read-only against features drawn in MMGIS. Nothing is created in PlanDev.
+- **Revise** it: edit the plan's spatial inputs in MMGIS, and PlanDev derives a candidate. The integration duplicates the plan and replaces the activities the mission goal created there, keeping every other activity. PlanDev then schedules and simulates the candidate.
+- **Compare** the plan and its derived candidates: metrics and constraint violations side by side, with map overlays.
+
+Candidates are ordinary PlanDev plans, linked by `parent_id`. The tool runs in two modes:
+
+- **Standalone:** plans are chosen in the tool.
 - **Embedded:** MMGIS runs in a PlanDev plan's *External Application* panel, kept in step with the timeline's time cursor, activity selection and the plan or simulation dataset on screen.
 
 The same code drives two missions:
@@ -25,12 +32,12 @@ PlanDev plan page ── postMessage plandev.embed.v1 (ids + time only) ──�
 |---|---|
 | `backend/PlanDev/` | MMGIS backend plugin. Holds the PlanDev credentials (env only) and mounts `/api/plandev/*` behind MMGIS sign-in (`draw.use`). |
 | `lib/plandev.js` | Minimal server-side PlanDev client (gateway login, GraphQL, file upload, plan import). |
-| `lib/candidates.js` | **Mission-independent.** Creates candidates (duplicate plan, set goal arguments, copy constraint specs, schedule, simulate) and assembles the *plan view* for any plan of a configured model. Also reads directives, spans, profiles and constraint results. |
-| `lib/util.js` | Pure helpers: intervals, profile evaluation, GeoJSON validation, great-circle distance. |
+| `lib/candidates.js` | **Mission-independent.** Derives candidates from any plan of a configured model, which means:<br>• duplicating the plan;<br>• replacing the mission goal's earlier output;<br>• copying the constraint and scheduling specifications;<br>• scheduling and simulating.<br>It also assembles the revision-consistent *plan view* and runs read-only evaluations. Directives, spans, profiles and constraint results are read here. |
+| `lib/util.js` | Pure helpers: intervals, profile evaluation, GeoJSON validation, great-circle distance, planar point/segment-in-polygon. |
 | `missions/mro.js`, `missions/hopper.js` | **Mission adapters.** Each one defines its goal arguments and parameters, how it reads the goal's outputs, its metrics and table, its map features, and the position track. |
 | `tools/PlanDev/PlanDevTool.js` | MMGIS tool panel. Generic: forms, tables and metrics are rendered from what the adapter returns. Selects the adapter with the tool variable `mission`. |
 | `tools/PlanDev/PlanDevEmbed.js` | Embedded mode: the MMGIS end of the `plandev.embed.v1` bridge. |
-| `scripts/setup-plandev.js` | Uploads each mission's model, goal and constraint, and creates or imports its base plan. |
+| `scripts/setup-plandev.js` | Uploads each mission's model, goal and constraints, and creates or imports its plans. For the hopper this includes *Reiner Gamma ops (existing plan)*, built the way a PlanDev user would build it. |
 | `scripts/setup-mmgis.js` | Creates the `Mars-PlanDev` and `Moon-PlanDev` MMGIS missions (`mission/*.config.json`). |
 | `deploy/plandev-spice.override.yml` | Compose override that mounts `spice-kernels/` into merlin and its workers, and into the scheduler workers (MRO only). |
 
@@ -45,29 +52,62 @@ PlanDev plan page ── postMessage plandev.embed.v1 (ids + time only) ──�
 | `params: [{key, label, unit, type, min, max, options, default}]` | Validating parameters and rendering the form. |
 | `goalArguments(targets, params)` / `inputsFromGoalArguments(args)` | Converting to and from the spec-goal arguments stored in PlanDev, which remain the record of what was asked. |
 | `interpret(ctx)` → `{features, position, table, notes}` | Map features, position track, per-activity table and notes for one simulation dataset. |
-| `metrics(ctx)` → `[{key, name, value, unit, digits}]` | Summary metrics. The generic code also computes them on the base plan and adds `base` to each. |
+| `metrics(ctx)` → `[{key, name, value, unit, digits}]` | Summary metrics. The generic code also computes them on the plan this one was derived from (`parent_id`), and adds that value to each metric as `base`. |
+| `evaluation: {help, targets, params}` + `evaluate(ctx, targets, params)` → `{features, table, summary, notes}` | *Optional.* A read-only spatial question about one plan's simulation (hopper only). |
 
-`ctx` holds the plan, the simulation dataset, the goal arguments, plan-relative time helpers, and `ops`, which offers cached `profiles`, `spans` and `directives` reads.
+`ctx` holds:
+
+- the plan and the simulation dataset;
+- `stale`;
+- the goal arguments;
+- plan-relative time helpers;
+- `ops`, which offers cached `profiles`, `spans` and `directives` reads.
+
+When the dataset simulated an older plan revision (`stale`), current plan state no longer describes it. In that case `ops.directives` returns nothing and `goalArgs` is null, so the adapter sees only what the dataset recorded.
 
 Feature properties that the generic map code relies on:
 
 - `spanId`, `directiveId`, `startMs`, `endMs`, `name`.
 - `primary`: the feature that stands for its activity, used when selecting.
 - `context`: geometry left out when fitting the map.
+- `basis`: `simulated` (a modelled state), `illustrative` (an assumed path), `input` or `analysis`. The generic layer turns this into a per-feature style: solid, dashed, white dotted and yellow dashed respectively.
 
 The generic layer adds `fid`, `planId` and `simulationDatasetId` to every feature.
+
+### Working on existing plans
+
+| Step | Generic behaviour (`lib/candidates.js`) |
+|---|---|
+| Choose the plan | The mission comes from the plan's mission model. The request carries the caller's mission, and a plan of another mission is refused, for example a Moon map asked to revise a Mars plan. Embedded, the panel follows PlanDev's `planId` and `simulationDatasetId`. |
+| Revision consistency | A view names the plan revision and the dataset's `plan_revision`. A dataset of an older revision is reported as `stale`. Only what it recorded is shown, never mixed with current directives or goal inputs. A dataset id belonging to another plan is refused. |
+| Revise | The client sends the revision it was looking at (`expectedRevision`); a plan that has changed since is refused. Then:<ol><li>`duplicate_plan` copies the plan.</li><li>Directives whose `source_scheduling_goal_invocation_id` is one of the source plan's invocations of the mission goal are deleted from the copy. They are re-anchored to plan start first.</li><li>The constraint specification is copied.</li><li>The mission goal is inserted with the new arguments. Other goals are copied but disabled, because their earlier output was copied as-is.</li><li>The candidate is scheduled and simulated.</li></ol>The source plan is never written. |
+| Lineage | The plan's `parent_id`, plus the revision of the snapshot `duplicate_plan` took (the source revision at derivation). |
+| Evaluate | Reads the plan's dataset, calls the adapter's `evaluate`, and writes nothing. |
+
+Routes are mounted under `/api/plandev/`:
+
+| Route | Purpose |
+|---|---|
+| `missions/:key/config` | Mission configuration. |
+| `missions/:key/plans` | Every plan of the mission's model, with lineage. |
+| `plans/:id?simulationDatasetId&mission` | The plan view. |
+| `plans/:id/geojson` | The plan's features as GeoJSON. |
+| `POST plans/:id/candidates {mission, targets, params, label, expectedRevision}` | Derive a candidate. |
+| `POST plans/:id/evaluate {mission, simulationDatasetId, targets, params}` | Read-only evaluation. |
+
+To revise a plan's spatial inputs, use *Copy the plan's goal inputs to a new Draw file*, then edit the file with the Draw tool. Each copied feature keeps the plan's target id in `properties.targetId`, so a site that is kept or moved keeps its id across revisions.
 
 ## Embedded mode (PlanDev UI side)
 
 The plan page's *External Application* panel (`IFrame.svelte` in plandev-ui) posts `plandev.embed.v1` context to its iframe:
 
-- `planId`, `planRevision`, `simulationDatasetId`.
+- `planId`, `planRevision` (the live revision subscription), `simulationDatasetId`.
 - `timeMs`, the timeline time cursor.
 - `selectedActivityDirectiveId`, `selectedSpanId`.
 
 Posts go to the iframe src's origin only, at most one every 100 ms.
 
-The panel accepts three requests, and only from that iframe at that origin: `ready`, `setTime` and `select`. No credentials or simulation results cross the bridge; MMGIS fetches the view with its own session.
+The panel accepts four requests, and only from that iframe at that origin: `ready`, `setTime`, `select`, and `openPlan`. `openPlan` navigates to another plan and keeps the current view; the iframe and the MMGIS tool's state survive the navigation. No credentials or simulation results cross the bridge; MMGIS fetches the view with its own session.
 
 On the MMGIS side the bridge runs only when MMGIS is framed by an origin listed in the PlanDev tool's `embedOrigins` variable. MMGIS's `FRAME_ANCESTORS` must allow that origin too.
 
@@ -78,7 +118,13 @@ What MMGIS shows:
   - Hopper: `hopper.latitude/longitude`, which change when a hop lands.
 - **Timeline → map:** a selection in the timeline selects the activity's `primary` feature in MMGIS.
 - **Map → timeline:** clicking a feature selects its span or directive in PlanDev and moves the cursor to the activity's start. Clicking near a shown position sample moves the cursor to that sample.
-- **Plan or dataset change:** the map reloads. The pill on the map shows the plan, its revision, the simulation dataset and its status. Features carry `simulationDatasetId`, and map clicks on a stale dataset's features are ignored.
+- **Plan or dataset change:** the features reload. The map fits once per plan. A dataset or revision change keeps the user's view, and so does a view pinned with MMGIS `mapLat`/`mapLon`/`mapZoom` in the iframe URL.
+- **The pill on the map** shows:
+  - the plan and the plan it was derived from;
+  - the plan's revision;
+  - the simulation dataset, its status, and whether it is stale.
+
+  Features carry `simulationDatasetId`, and map clicks on a stale dataset's features are ignored. The position marker pans the map only when *follow position* is on.
 
 ## Data conventions
 
@@ -100,14 +146,25 @@ What MMGIS shows:
 | | MRO | Hopper |
 |---|---|---|
 | Goal | `ScheduleTargetObservations`: closest SPICE sub-spacecraft pass per target, if within `maxGroundDistanceKm`. It does not check footprint coverage. | `ScheduleHopTraverse`: hop to each site, in the drawn order or nearest-next. Each hop is followed by a rest and an image. |
-| Map | Targets; observation track; ±15 min track; target ↔ closest-sample line | Sites; the location at plan start; hop legs as straight segments between the simulated take-off and landing locations; image points |
+| Map | Targets (input); observation track; ±15 min track; target ↔ closest-sample line (analysis) | Sites (input); the location at plan start; hop legs (illustrative: straight segments between simulated take-off and landing locations); image points |
 | Table | Per observation: target, start, closest 30 s sample distance, SOC at end, data written | Per leg: destination, start, distance (from the odometer), hop duration, SOC after |
-| Metrics | Min SOC, final onboard data, observation count | Distance hopped, traverse duration, hops, images, min SOC, data onboard, storage capacity |
-| Constraints | None configured | `MinBatterySOC` at 80 % (the base plan's spec, copied into each candidate) |
+| Metrics | Min SOC, final onboard data, observation count | Distance hopped, traverse duration, hops, images, min SOC, peak storage (% full), data written, data downlinked (`onboard.removedVolume`), data still onboard |
+| Constraints | None configured | `MinBatterySOC` at 80 %, and `OnboardStorageFull` at 99 % (data beyond capacity is lost). Both come from the plan's spec and are copied into each candidate. |
+| Read-only evaluation | — | For Draw points: was a simulated landing within *r* km, and was the site imaged? For polygons: simulated landings inside, and hop legs that cross. Leg crossings assume straight legs and are labelled as an assumption. |
 
 Hopper hop timing is **illustrative**: 60 s plus the distance at 50 m/s. It is implemented once, in `hopper.HopModel`, and both `PerformHop` and the goal call it.
 
-The hopper base plan uses an illustrative power configuration: a 2 m² array and a 10 Ah battery. With the model defaults, the array out-produces the 1000 W hop load.
+The hopper's sizing is also illustrative, set as plain sim configuration and goal constants, so that route choices change simulated outcomes:
+
+- **Power:** a 2 m² array and a 10 Ah battery. With the model defaults, the array would out-produce the 1000 W hop load.
+- **Downlink:** 2 Mbit/s playback during a Downlink pass.
+- **Data rates:** 20 Mbit/s imaging and 0.2 Mbit/s hop telemetry.
+- **Storage:** 10 Gbit.
+
+On *Reiner Gamma ops (existing plan)*, which has hand-placed DSN passes at 06:00 and 30:00, adding a fourth site fills onboard storage before the first pass (an `OnboardStorageFull` violation). Two revisions avoid it at different costs:
+
+- dropping a site: shorter route, fewer images;
+- shorter imaging: all sites, less data per site.
 
 ## Local setup
 
@@ -130,12 +187,14 @@ The steps below are what this prototype was verified with. Ports belong to the `
    pd new mmgis-ui --from v4.5.0 --backend mmgis && pd up mmgis-ui     # PlanDev UI on :3111
    ```
    Embedded mode needs the plandev-ui branch `feat/embedded-app-bridge` in that UI checkout.
+
+   **Scheduler fix needed for the hopper's existing plan.** On stock v4.5.0, a procedural goal that calls `plan.simulate()` fails with `id(...) must not be null` on any plan with an activity that spawns children. The hopper's Downlink spawns PlaybackData and DeleteData. The one-line fix is on the plandev branch `fix/procedural-directives-skip-children`. Build the scheduler worker from it, for example with `pd stack rebuild mmgis sw1`.
 3. **Seed PlanDev** (uploading a model needs `aerie_admin`; nothing else does):
    ```bash
    PLANDEV_ROLE=aerie_admin PLANDEV_GATEWAY_URL=http://localhost:31021 PLANDEV_HASURA_URL=http://localhost:31020 \
    PLANDEV_USERNAME=mmgis-planner PLANDEV_PASSWORD=… node integrations/mmgis/scripts/setup-plandev.js   # [mro] [hopper]
    ```
-   The script prints `PLANDEV_<MISSION>_BASE_PLAN_ID` and `PLANDEV_<MISSION>_GOAL_ID`.
+   The script prints `PLANDEV_<MISSION>_BASE_PLAN_ID` and `PLANDEV_<MISSION>_GOAL_ID`. The base plan identifies the mission model and is the default plan to show; any plan of that model can be used. Setup is idempotent by name. To upload a rebuilt goal jar as a new goal version, run it with `UPDATE_GOALS=1`.
 4. **MMGIS** (≥ 5.5, Node 22) with PostGIS. Also apply the `mmgisAPI.addLayer` fix (branch `fix/mmgisapi-addlayer-resetconfig`).
    ```bash
    docker run -d --name mmgis-postgis -e POSTGRES_USER=mmgis -e POSTGRES_PASSWORD=mmgis -e POSTGRES_DB=mmgis -p 35432:5432 postgis/postgis:16-3.4
@@ -157,14 +216,15 @@ The steps below are what this prototype was verified with. Ports belong to the `
    PLANDEV_UI_URL=http://localhost:3111
    ```
 5. **Missions:** `MMGIS_ADMIN=admin MMGIS_ADMIN_PASSWORD='…' MMGIS_SETUP_CODE=… node integrations/mmgis/scripts/setup-mmgis.js`. The PlanDev tool's `embedOrigins` in `mission/*.config.json` must list the PlanDev UI origin.
-6. **Standalone:** open `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`) and sign in.
-   1. In the **Draw** tool, create a file and place points.
-   2. In the **PlanDev** tool, pick the file, tick targets and set parameters, then click **Create candidate**.
-   3. Toggle a plan's eye icon to show its layer.
+6. **Standalone:** open `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`) and sign in. In the **PlanDev** tool, choose a plan, then:
+   1. **Revise:** click *Copy … goal inputs to a new Draw file*. Move, add or delete points in that file with the **Draw** tool, then reload the file in the PlanDev tool. Tick the inputs, set the parameters, and click **Create candidate from #N**.
+   2. **Evaluate:** pick a Draw file with points or polygons, tick them, and click **Evaluate**.
+   3. **Compare:** tick plans to compare them, and use the eye icons to overlay their routes.
 7. **Embedded:** in a PlanDev plan, set a grid panel to *External Application* with `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`), then save the view.
    1. Sign in to MMGIS once in the same browser.
    2. Click the timeline's time-cursor lane (under the time axis) to place the cursor, and drag it to scrub.
    3. Select activities in the timeline or tables, or click features on the map.
+   4. The PlanDev tool inside MMGIS follows the open plan. *Open in PlanDev* on a compared plan switches PlanDev to it.
 
    PlanDev views hold their timeline rows and their iframe URL, so in practice each mission needs its own view.
 
@@ -179,7 +239,10 @@ Tests:
 
 - **Identity:** a single service identity (`PLANDEV_USERNAME`) owns every candidate. The MMGIS username is recorded only in the plan description.
 - **Authorization:** planning is gated on `draw.use`, which any signed-in MMGIS user has.
-- **Process:** scheduling and simulation run in a promise inside the MMGIS process. Status is re-read from PlanDev, so a restart mid-run leaves a candidate showing *scheduled, not simulated*.
+- **Process:** scheduling and simulation run in a promise inside the MMGIS process. Status is re-read from PlanDev, so a restart mid-run leaves a candidate showing *not simulated*.
+- **Revising directives the user edited:** directives keep their source goal invocation after manual edits. A goal-created directive that was edited by hand is therefore still replaced in a candidate.
+- **Revision check:** the source revision is checked just before `duplicate_plan`, not atomically with it.
+- **Evaluation geometry:** planar lon/lat, which suits site-scale regions away from the poles and the antimeridian.
 - **Layers:** result layers are session-only (`mmgisAPI.addLayer`).
 - **Selection in MMGIS:** fires MMGIS's click pipeline, so the Info panel updates too.
 - **Positions:** the map shows positions only where the model simulates them:

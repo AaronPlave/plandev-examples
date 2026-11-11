@@ -23,8 +23,20 @@
 .plandevTool tbody tr:hover { background: var(--color-a2, #333); }
 .plandevTool .status.complete { color: #69f0ae; }
 .plandevTool .status.running { color: #ffd54f; }
-.plandevEmbedPill { position: absolute; left: 50%; transform: translateX(-50%); bottom: 34px; z-index: 2000; max-width: min(720px, 90vw);
+.plandevEmbedPill { position: absolute; right: 12px; bottom: 70px; z-index: 2000; max-width: min(520px, 44vw);
   background: rgba(20, 20, 24, 0.88); color: #eee; font: 12px/1.4 monospace; padding: 6px 10px; border-radius: 4px; white-space: pre-wrap; pointer-events: none; }
+.plandevEmbedPill label { pointer-events: auto; cursor: pointer; color: #aaa; }
 .plandevTool_constraint { font-size: 12px; margin: 2px 0; }
 .plandevTool_constraint.ok { color: #69f0ae; }
 .plandevTool_constraint.bad { color: #ff6e6e; }
+.plandevTool_modes { display: flex; gap: 4px; margin: 12px 0 8px; }
+.plandevTool_modes button { flex: 1; background: var(--color-a1, #222); color: inherit; border: 1px solid var(--color-a3, #444); padding: 5px 4px; border-radius: 3px; cursor: pointer; font-size: 12px; }
+.plandevTool_modes button.on { background: var(--color-mmgis); color: #000; border-color: var(--color-mmgis); }
+.plandevTool_modes button:disabled { opacity: 0.4; cursor: default; }
+.plandevTool_row { display: flex; gap: 4px; align-items: center; }
+.plandevTool_candidates .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plandevTool_compare { overflow-x: auto; }
+.plandevTool_compare tbody tr { cursor: default; }
+.plandevTool_compare td.bad { color: #ff6e6e; font-weight: bold; }
+.plandevTool_compare td.ok { color: #69f0ae; }
+.plandevTool .status.stale { color: #ffb74d; }

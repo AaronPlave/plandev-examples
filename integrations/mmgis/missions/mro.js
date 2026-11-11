@@ -68,6 +68,7 @@ module.exports = {
             type: 'Feature',
             properties: {
                 kind: 'target',
+                basis: 'input',
                 targetId: f.id,
                 name: f.properties?.name ?? f.id,
                 scheduled: [...targetOf.values()].includes(f.id),
@@ -85,7 +86,7 @@ module.exports = {
             const obsPts = between(s.startSec, s.endSec)
             // Draw order (later = on top): context track, association, then the observation itself.
             const ctxGeom = pathGeometry(between(s.startSec - TRACK_CONTEXT_SEC, s.endSec + TRACK_CONTEXT_SEC).map(([, lo, la]) => [lo, la]))
-            if (ctxGeom) features.push({ type: 'Feature', properties: { kind: 'track-context', context: true, name: `±15 min ground track`, ...common }, geometry: ctxGeom })
+            if (ctxGeom) features.push({ type: 'Feature', properties: { kind: 'track-context', basis: 'simulated', context: true, name: `±15 min ground track`, ...common }, geometry: ctxGeom })
             let closest = null
             if (target) {
                 const [tlon, tlat] = anchor(target.geometry)
@@ -96,12 +97,12 @@ module.exports = {
                 if (closest)
                     features.push({
                         type: 'Feature',
-                        properties: { kind: 'association', ...common, distanceKm: +closest.km.toFixed(1), name: `${target.properties?.name ?? targetId} ↔ closest sample` },
+                        properties: { kind: 'association', basis: 'analysis', ...common, distanceKm: +closest.km.toFixed(1), name: `${target.properties?.name ?? targetId} ↔ closest sample` },
                         geometry: { type: 'LineString', coordinates: [[tlon, tlat], [closest.lo, closest.la]] },
                     })
             }
             const obsGeom = pathGeometry(obsPts.map(([, lo, la]) => [lo, la]))
-            if (obsGeom) features.push({ type: 'Feature', properties: { kind: 'observation', primary: true, name: `${OBS} ${s.spanId}${target ? ` · ${target.properties?.name}` : ''}`, ...common }, geometry: obsGeom })
+            if (obsGeom) features.push({ type: 'Feature', properties: { kind: 'observation', basis: 'simulated', primary: true, name: `${OBS} ${s.spanId}${target ? ` · ${target.properties?.name}` : ''}`, ...common }, geometry: obsGeom })
 
             const vol = binVolumes[`scBin${s.arguments.bin ?? 0}.volume`]
             rows.push({
