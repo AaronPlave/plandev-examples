@@ -58,6 +58,10 @@ public record ScheduleHopTraverse(
 
   public record Site(String id, double lat, double lon) {}
 
+  /** Illustrative data rates: navigation telemetry while hopping, science imaging at a site. */
+  public static final double HOP_DATA_RATE_BPS = 2e5;
+  public static final double IMAGE_DATA_RATE_BPS = 2e7;
+
   @NotNull
   @Override
   public ActivityAutoDelete shouldDeletePastCreations(@NotNull Plan plan, @Nullable SimulationResults simResults) {
@@ -90,7 +94,7 @@ public record ScheduleHopTraverse(
               "toLatitude", SerializedValue.of(s.lat()),
               "toLongitude", SerializedValue.of(s.lon()),
               "durationSeconds", SerializedValue.of(hopSeconds), // informational: the model derives it
-              "dataRateBps", SerializedValue.of(5e6),
+              "dataRateBps", SerializedValue.of(HOP_DATA_RATE_BPS),
               "bin", SerializedValue.of(0))),
           "Hop to " + s.id(),
           "PerformHop",
@@ -99,7 +103,7 @@ public record ScheduleHopTraverse(
           new AnyDirective(Map.of(
               "siteId", SerializedValue.of(s.id()),
               "durationSeconds", SerializedValue.of(pictureSeconds),
-              "dataRateBps", SerializedValue.of(5e6),
+              "dataRateBps", SerializedValue.of(IMAGE_DATA_RATE_BPS),
               "bin", SerializedValue.of(0))),
           "Image " + s.id(),
           "TakePicture",

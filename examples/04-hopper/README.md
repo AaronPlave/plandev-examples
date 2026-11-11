@@ -34,10 +34,12 @@ ground contacts:
 ## What's new vs. 03-power-and-data
 
 - A real mission flavor with three activities that each drive **both** subsystems.
-- A **constraints** subproject (`MinBatterySOC`).
+- A **constraints** subproject (`MinBatterySOC`; `OnboardStorageFull`, violated while storage is at or above a fraction of capacity).
 - A **scheduling** subproject: `ScheduleHopTraverse` takes GeoJSON sites (in order, or nearest-next) and
   plans a hop + rest + `TakePicture` per site from the simulated start location, using the same
-  `HopModel` as the simulation. Used by [integrations/mmgis](../../integrations/mmgis/).
+  `HopModel` as the simulation. Images are written at an illustrative 20 Mbit/s and hops at 0.2 Mbit/s.
+  Its `ActivityAutoDelete` replaces the traverse that the same goal invocation created on an earlier run.
+  Used by [integrations/mmgis](../../integrations/mmgis/).
 - **External events** (DSN ground contacts) and an **external dataset** (lunar Sun/Earth
   elevation) — the kinds of real-world inputs a mission planner schedules against.
 
@@ -77,7 +79,7 @@ turns the bin's receive rate on, accumulates data for the duration, then turns i
 **Artifacts:**
 
 - `build/libs/hopper.jar` — the mission model; upload directly to PlanDev.
-- `constraints/build/libs/MinBatterySOC.jar` — the constraint procedure.
+- `constraints/build/libs/MinBatterySOC.jar`, `OnboardStorageFull.jar` — the constraint procedures.
 - `scheduling/build/libs/ScheduleHopTraverse.jar` — the traverse goal
   (`./gradlew :examples:04-hopper:scheduling:compileJava` then
   `:examples:04-hopper:scheduling:buildSchedulingProcedureJar_ScheduleHopTraverse`).
