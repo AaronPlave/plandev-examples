@@ -39,7 +39,11 @@ ground contacts:
   plans a hop + rest + `TakePicture` per site from the simulated start location, using the same
   `HopModel` as the simulation. Images are written at an illustrative 20 Mbit/s and hops at 0.2 Mbit/s.
   Its `ActivityAutoDelete` replaces the traverse that the same goal invocation created on an earlier run.
-  Used by [integrations/mmgis](../../integrations/mmgis/).
+  `ScheduleStorageDownlinks`, run after it in the same specification, simulates the plan and adds
+  `Downlink` passes so `onboard.volume` stays below a fraction of capacity: each time storage would
+  overflow, a pass goes in the latest free contact window before then. Contact windows are an
+  illustrative assumption given as goal arguments (default 1 h every 4 h from 02:00), not geometry;
+  existing Downlinks occupy theirs. Used by [integrations/mmgis](../../integrations/mmgis/).
 - **External events** (DSN ground contacts) and an **external dataset** (lunar Sun/Earth
   elevation) — the kinds of real-world inputs a mission planner schedules against.
 
@@ -80,9 +84,8 @@ turns the bin's receive rate on, accumulates data for the duration, then turns i
 
 - `build/libs/hopper.jar` — the mission model; upload directly to PlanDev.
 - `constraints/build/libs/MinBatterySOC.jar`, `OnboardStorageFull.jar` — the constraint procedures.
-- `scheduling/build/libs/ScheduleHopTraverse.jar` — the traverse goal
-  (`./gradlew :examples:04-hopper:scheduling:compileJava` then
-  `:examples:04-hopper:scheduling:buildSchedulingProcedureJar_ScheduleHopTraverse`).
+- `scheduling/build/libs/ScheduleHopTraverse.jar`, `ScheduleStorageDownlinks.jar` — the goals
+  (`./gradlew :examples:04-hopper:scheduling:buildAllSchedulingProcedureJars`).
 
 > `constraints:build` alone produces a thin `constraints.jar` without bundled dependencies —
 > not the artifact you upload. Use `buildAllConstraintProcedureJars` as shown above.
