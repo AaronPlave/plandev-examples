@@ -41,6 +41,15 @@ export function openPlanInPlanDev(planId) {
     if (state.origin) send({ type: 'openPlan', planId })
 }
 
+/**
+ * Ask PlanDev to show one of the open plan's simulations, e.g. the one a run started from the map just
+ * produced (PlanDev only switches by itself for simulations its own UI started). PlanDev stays the
+ * authority: it checks the dataset is the open plan's, and sends the new context back.
+ */
+export function showSimulationInPlanDev(simulationDatasetId) {
+    if (state.origin) send({ type: 'showSimulation', simulationDatasetId })
+}
+
 const announce = () => document.dispatchEvent(new CustomEvent('plandev:embed', { detail: embedded() }))
 
 function send(msg) {

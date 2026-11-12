@@ -8,7 +8,8 @@ const express = require('express')
 const { clientFromEnv } = require('../../lib/plandev')
 const { createCandidates } = require('../../lib/candidates')
 
-// Mission adapters, enabled by setting their goal id and a plan of their mission model (the default plan).
+// Mission adapters, enabled by setting a plan of their mission model (the default plan). Their goals are
+// found in PlanDev by name (adapter.goals).
 const ADAPTERS = { mro: require('../../missions/mro'), hopper: require('../../missions/hopper') }
 
 let candidates = null
@@ -17,9 +18,9 @@ function workflow() {
         const missions = Object.values(ADAPTERS)
             .map((adapter) => {
                 const env = (k) => process.env[`PLANDEV_${adapter.key.toUpperCase()}_${k}`]
-                return { adapter, basePlanId: Number(env('BASE_PLAN_ID')), goalId: Number(env('GOAL_ID')) }
+                return { adapter, basePlanId: Number(env('BASE_PLAN_ID')) }
             })
-            .filter((m) => m.basePlanId > 0 && m.goalId > 0)
+            .filter((m) => m.basePlanId > 0)
         candidates = createCandidates(clientFromEnv(), missions)
     }
     return candidates
@@ -56,22 +57,22 @@ function makeRouter(s) {
     // Every plan of the mission's model (with parent_id lineage): any of them can be inspected, evaluated or revised.
     router.get('/missions/:key/plans', canPlan, send((req) => workflow().plans(req.params.key)))
 
-    // Derive a candidate from plan :id. expectedRevision is the revision the user was looking at:
-    // a plan that changed since is refused rather than revised from stale context.
-    router.post(
-        '/plans/:id/candidates',
-        canPlan,
-        send((req) =>
-            workflow().createCandidate(intParam(req.params.id, 'plan id'), {
-                mission: req.body.mission,
-                targets: req.body.targets,
-                params: req.body.params,
-                label: req.body.label,
-                expectedRevision: intParam(req.body.expectedRevision, 'expectedRevision'),
-                requestedBy: `mmgis:${req.user}`,
-            }),
-        ),
-    )
+    // Working branches. expectedRevision is the revision the user was looking at: a plan that changed
+    // since is refused rather than changed from stale context.
+    const inputs = (req) => ({
+        mission: req.body.mission,
+        targets: req.body.targets,
+        params: req.body.params,
+        label: req.body.label,
+        expectedRevision: intParam(req.body.expectedRevision, 'expectedRevision'),
+        requestedBy: `mmgis:${req.user}`,
+    })
+    // Explore an alternative: branch plan :id (never changed) into a new working branch and run it.
+    router.post('/plans/:id/explore', canPlan, send((req) => workflow().explore(intParam(req.params.id, 'plan id'), inputs(req))))
+    // Update the exploration: re-run working branch :id with new inputs (refused for any other plan).
+    router.post('/plans/:id/update', canPlan, send((req) => workflow().update(intParam(req.params.id, 'plan id'), inputs(req))))
+    // Keep as plan: :id stops being a working branch; it stays an ordinary PlanDev plan.
+    router.post('/plans/:id/keep', canPlan, send((req) => workflow().keep(intParam(req.params.id, 'plan id'))))
     // Read-only evaluation of spatial inputs against a plan's simulation. Creates nothing in PlanDev.
     router.post(
         '/plans/:id/evaluate',
@@ -108,9 +109,7 @@ module.exports = {
         { name: 'PLANDEV_USERNAME', required: true },
         { name: 'PLANDEV_PASSWORD', required: true, private: true },
         { name: 'PLANDEV_MRO_BASE_PLAN_ID', required: false },
-        { name: 'PLANDEV_MRO_GOAL_ID', required: false },
         { name: 'PLANDEV_HOPPER_BASE_PLAN_ID', required: false },
-        { name: 'PLANDEV_HOPPER_GOAL_ID', required: false },
         { name: 'PLANDEV_UI_URL', required: false },
     ],
     onceInit: (s) => {

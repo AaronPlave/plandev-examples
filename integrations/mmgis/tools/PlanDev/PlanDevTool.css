@@ -23,7 +23,7 @@
 .plandevTool tbody tr:hover { background: var(--color-a2, #333); }
 .plandevTool .status.complete { color: #69f0ae; }
 .plandevTool .status.running { color: #ffd54f; }
-.plandevEmbedPill { position: absolute; right: 12px; bottom: 70px; z-index: 2000; max-width: min(520px, 44vw);
+.plandevEmbedPill { position: absolute; right: 12px; bottom: 70px; z-index: 2000; max-width: min(360px, 40vw);
   background: rgba(20, 20, 24, 0.88); color: #eee; font: 12px/1.4 monospace; padding: 6px 10px; border-radius: 4px; white-space: pre-wrap; pointer-events: none; }
 .plandevEmbedPill label { pointer-events: auto; cursor: pointer; color: #aaa; }
 .plandevTool_constraint { font-size: 12px; margin: 2px 0; }
@@ -40,3 +40,13 @@
 .plandevTool_compare td.bad { color: #ff6e6e; font-weight: bold; }
 .plandevTool_compare td.ok { color: #69f0ae; }
 .plandevTool .status.stale { color: #ffb74d; }
+.plandevTool_result.exploring { border-left: 3px solid #ff9100; padding-left: 8px; }
+.plandevTool_badge { display: inline-block; background: #ff9100; color: #000; border-radius: 8px; padding: 0 6px; font-size: 11px; margin-right: 6px; white-space: nowrap; }
+.plandevTool_badge.plain { background: var(--color-a3, #444); color: inherit; }
+.plandevTool_actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.plandevTool_consequences { margin-top: 6px; padding: 6px 8px; border-radius: 3px; border: 1px solid; }
+.plandevTool_consequences.ok { border-color: #69f0ae; }
+.plandevTool_consequences.bad { border-color: #ff6e6e; }
+.plandevTool_consequences.bad b { color: #ff6e6e; }
+.plandevTool_consequences.ok b { color: #69f0ae; }
+.plandevTool_compare tr.plandevTool_total td { font-weight: bold; }

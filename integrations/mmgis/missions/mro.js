@@ -31,24 +31,30 @@ module.exports = {
         { key: 'mode', label: 'Radar mode', type: 'enum', options: ['LOW_RES', 'MED_RES', 'HI_RES'], default: 'HI_RES' },
     ],
 
-    goalArguments(targets, p) {
-        return {
-            targets: JSON.stringify(targets),
-            maxGroundDistanceKm: p.maxGroundDistanceKm,
-            observationDuration: Math.round(p.observationDurationSec * 1e6), // microseconds
-            mode: p.mode,
-        }
-    },
+    // The scheduling goals that take the map's inputs (setup-plandev.js uploads them by these names).
+    goals: [
+        {
+            name: 'ScheduleTargetObservations',
+            arguments: (targets, p) => ({
+                targets: JSON.stringify(targets),
+                maxGroundDistanceKm: p.maxGroundDistanceKm,
+                observationDuration: Math.round(p.observationDurationSec * 1e6), // microseconds
+                mode: p.mode,
+            }),
+        },
+    ],
 
-    inputsFromGoalArguments(args) {
+    inputsFromGoalArguments({ ScheduleTargetObservations: args }) {
+        if (!args) return null
         return {
             targets: args.targets ? JSON.parse(args.targets) : { type: 'FeatureCollection', features: [] },
             params: { maxGroundDistanceKm: args.maxGroundDistanceKm, observationDurationSec: args.observationDuration / 1e6, mode: args.mode },
         }
     },
 
-    async interpret({ ops, plan, dataset, goalArgs, startMs, iso }) {
-        const targets = goalArgs ? this.inputsFromGoalArguments(goalArgs).targets.features : []
+    async interpret({ ops, plan, dataset, goalArgs: byName, startMs, iso }) {
+        const goalArgs = byName?.ScheduleTargetObservations ?? null
+        const targets = goalArgs ? this.inputsFromGoalArguments(byName).targets.features : []
         const [spans, directives, pr] = await Promise.all([
             ops.spans(dataset.dataset_id, [OBS]),
             ops.directives(plan.id, [OBS]),

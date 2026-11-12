@@ -1,5 +1,5 @@
-// Lunar hopper (examples/04-hopper) adapter: what the ScheduleHopTraverse goal takes, and what the
-// hopper's simulated location, power and data resources mean on a map of the Moon.
+// Lunar hopper (examples/04-hopper) adapter: what the ScheduleHopTraverse and ScheduleStorageDownlinks
+// goals take, and what the hopper's simulated location, power and data resources mean on a map of the Moon.
 'use strict'
 const { extremaOver, greatCircleKm, pointInRing, segmentHitsRing, valueAt } = require('../lib/util')
 
@@ -34,7 +34,7 @@ const MIN = 60e6 // microseconds per minute
 module.exports = {
     key: 'hopper',
     label: 'Lunar hopper traverse (Moon)',
-    help: 'Goal ScheduleHopTraverse: hop to each site in turn and image it. Hop duration = 60 s + distance at 50 m/s — an illustrative model shared by the goal and the simulation, not a vehicle design.',
+    help: 'Goals, in the plan’s scheduling order: ScheduleHopTraverse hops to each site in turn and images it (hop duration = 60 s + distance at 50 m/s, an illustrative model shared with the simulation); ScheduleStorageDownlinks then adds Downlink passes in free contact windows (assumed: 1 h every 4 h from 02:00) wherever simulated storage would pass the limit.',
     conventions: {
         body: 'MOON',
         frame: 'Moon body-fixed',
@@ -47,27 +47,42 @@ module.exports = {
         { key: 'restAfterHopMin', label: 'Rest after each hop', unit: 'min', type: 'number', min: 0, max: 600, default: 30 },
         { key: 'pictureDurationSec', label: 'Imaging per site', unit: 's', type: 'number', min: 10, max: 1800, default: 120 },
         { key: 'startAfterMin', label: 'Start after plan start', unit: 'min', type: 'number', min: 0, max: 1440, default: 60 },
+        { key: 'storageLimitPct', label: 'Downlink before storage passes', unit: '% full', type: 'number', min: 10, max: 100, default: 90 },
     ],
 
-    goalArguments(sites, p) {
-        return {
-            sites: JSON.stringify(sites),
-            order: p.order,
-            restAfterHop: Math.round(p.restAfterHopMin * MIN),
-            pictureDuration: Math.round(p.pictureDurationSec * 1e6),
-            startAfter: Math.round(p.startAfterMin * MIN),
-        }
-    },
+    // The scheduling goals that take the map's inputs (setup-plandev.js uploads them by these names). Their
+    // order and simulate-after settings are the plan's own scheduling specification; the downlink goal must
+    // come after the traverse so its simulation includes the new images.
+    goals: [
+        {
+            name: 'ScheduleHopTraverse',
+            arguments: (sites, p) => ({
+                sites: JSON.stringify(sites),
+                order: p.order,
+                restAfterHop: Math.round(p.restAfterHopMin * MIN),
+                pictureDuration: Math.round(p.pictureDurationSec * 1e6),
+                startAfter: Math.round(p.startAfterMin * MIN),
+            }),
+        },
+        { name: 'ScheduleStorageDownlinks', arguments: (sites, p) => ({ maxFraction: p.storageLimitPct / 100 }) },
+    ],
 
-    inputsFromGoalArguments(args) {
+    inputsFromGoalArguments({ ScheduleHopTraverse: t, ScheduleStorageDownlinks: d }) {
+        if (!t) return null
         return {
-            targets: args.sites ? JSON.parse(args.sites) : { type: 'FeatureCollection', features: [] },
-            params: { order: args.order, restAfterHopMin: args.restAfterHop / MIN, pictureDurationSec: args.pictureDuration / 1e6, startAfterMin: args.startAfter / MIN },
+            targets: t.sites ? JSON.parse(t.sites) : { type: 'FeatureCollection', features: [] },
+            params: {
+                order: t.order,
+                restAfterHopMin: t.restAfterHop / MIN,
+                pictureDurationSec: t.pictureDuration / 1e6,
+                startAfterMin: t.startAfter / MIN,
+                ...(d?.maxFraction != null && { storageLimitPct: d.maxFraction * 100 }),
+            },
         }
     },
 
     async interpret({ ops, dataset, goalArgs, startMs, iso }) {
-        const sites = goalArgs ? this.inputsFromGoalArguments(goalArgs).targets.features : []
+        const sites = goalArgs ? this.inputsFromGoalArguments(goalArgs)?.targets.features ?? [] : []
         const [hops, pictures, pr] = await Promise.all([
             ops.spans(dataset.dataset_id, ['PerformHop']),
             ops.spans(dataset.dataset_id, ['TakePicture']),
@@ -155,7 +170,7 @@ module.exports = {
 
     async metrics({ ops, dataset, durationSec }) {
         const pr = await ops.profiles(dataset.dataset_id, [R.odo, R.soc, R.volume, R.maxVolume, R.received, R.removed])
-        const [hops, pictures] = await Promise.all([ops.spans(dataset.dataset_id, ['PerformHop']), ops.spans(dataset.dataset_id, ['TakePicture'])])
+        const [hops, pictures, downlinks] = await Promise.all(['PerformHop', 'TakePicture', 'Downlink'].map((t) => ops.spans(dataset.dataset_id, [t])))
         const acts = [...hops, ...pictures]
         const span = acts.length ? (Math.max(...acts.map((s) => s.endSec)) - Math.min(...acts.map((s) => s.startSec))) / 3600 : 0
         return [
@@ -163,6 +178,7 @@ module.exports = {
             { key: 'traverseHours', name: 'Traverse duration', value: span, unit: 'h', digits: 2 },
             { key: 'hops', name: 'Hops', value: hops.length, unit: '', digits: 0 },
             { key: 'pictures', name: 'Images', value: pictures.length, unit: '', digits: 0 },
+            { key: 'downlinks', name: 'Downlink passes', value: downlinks.length, unit: '', digits: 0 },
             { key: 'minSOC', name: 'Min battery SOC', value: extremaOver(pr[R.soc], 0, durationSec).min, unit: '%', digits: 1 },
             { key: 'peakStorage', name: 'Peak onboard storage', value: (100 * extremaOver(pr[R.volume], 0, durationSec).max) / (valueAt(pr[R.maxVolume], 0) || NaN), unit: '% full', digits: 0 },
             { key: 'generated', name: 'Data written to storage', value: (valueAt(pr[R.received], durationSec) ?? NaN) / 1e9, unit: 'Gbit', digits: 2 },

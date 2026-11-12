@@ -103,22 +103,27 @@ test('normalizeTargets honours a mission\'s geometry types and preserves order',
 })
 
 test('checkParams validates against the adapter spec and fills defaults', () => {
-    assert.deepEqual(w.checkParams(hopper.params, { order: 'NEAREST_NEXT' }), { order: 'NEAREST_NEXT', restAfterHopMin: 30, pictureDurationSec: 120, startAfterMin: 60 })
+    assert.deepEqual(w.checkParams(hopper.params, { order: 'NEAREST_NEXT' }), { order: 'NEAREST_NEXT', restAfterHopMin: 30, pictureDurationSec: 120, startAfterMin: 60, storageLimitPct: 90 })
     assert.throws(() => w.checkParams(hopper.params, { order: 'RANDOM' }), /order must be one of/)
     assert.throws(() => w.checkParams(mro.params, { maxGroundDistanceKm: 0 }), /maxGroundDistanceKm/)
 })
 
-test('adapters round-trip goal arguments (durations in microseconds)', () => {
+// What lib/candidates.js writes into each named goal's arguments, and reads back.
+const argsByName = (a, fc, p) => Object.fromEntries(a.goals.map((g) => [g.name, g.arguments(fc, p)]))
+
+test('adapters round-trip goal arguments across their goals (durations in microseconds)', () => {
     const fc = { type: 'FeatureCollection', features: [] }
     for (const [a, p] of [
         [mro, { maxGroundDistanceKm: 100, observationDurationSec: 300, mode: 'HI_RES' }],
-        [hopper, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 120, startAfterMin: 60 }],
-    ]) {
-        const args = a.goalArguments(fc, p)
-        assert.deepEqual(a.inputsFromGoalArguments(args), { targets: fc, params: p })
-    }
-    assert.equal(mro.goalArguments(fc, { maxGroundDistanceKm: 1, observationDurationSec: 300, mode: 'HI_RES' }).observationDuration, 300e6)
-    assert.equal(hopper.goalArguments(fc, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 1, startAfterMin: 0 }).restAfterHop, 1800e6)
+        [hopper, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 120, startAfterMin: 60, storageLimitPct: 85 }],
+    ])
+        assert.deepEqual(a.inputsFromGoalArguments(argsByName(a, fc, p)), { targets: fc, params: p })
+    assert.equal(argsByName(mro, fc, { maxGroundDistanceKm: 1, observationDurationSec: 300, mode: 'HI_RES' }).ScheduleTargetObservations.observationDuration, 300e6)
+    const h = argsByName(hopper, fc, { order: 'AS_DRAWN', restAfterHopMin: 30, pictureDurationSec: 1, startAfterMin: 0, storageLimitPct: 90 })
+    assert.equal(h.ScheduleHopTraverse.restAfterHop, 1800e6)
+    assert.deepEqual(h.ScheduleStorageDownlinks, { maxFraction: 0.9 })
+    // A plan whose spec lacks the downlink goal still reads back its traverse inputs.
+    assert.equal(hopper.inputsFromGoalArguments({ ScheduleHopTraverse: h.ScheduleHopTraverse, ScheduleStorageDownlinks: null }).params.storageLimitPct, undefined)
 })
 
 test('pointInRing / segmentHitsRing (planar lon/lat)', () => {

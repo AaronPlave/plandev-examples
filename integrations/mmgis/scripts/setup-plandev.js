@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One-time PlanDev setup for the MMGIS prototype, per mission: upload the mission model, its
-// scheduling goal and constraints, create or import its plans, and schedule/simulate them.
-// Idempotent by name. UPDATE_GOALS=1 uploads the goal jar again as a new goal version.
+// scheduling goals and constraints, create or import its plans, and schedule/simulate them.
+// Idempotent by name. UPDATE_GOALS=1 uploads the goal jars again as new goal versions.
 //
 //   PLANDEV_ROLE=aerie_admin PLANDEV_GATEWAY_URL=http://localhost:9000 PLANDEV_HASURA_URL=http://localhost:8080 \
 //   PLANDEV_USERNAME=mmgis-planner PLANDEV_PASSWORD=... node scripts/setup-plandev.js [mro|hopper ...]
@@ -30,20 +30,29 @@ const HOPPER_PLAN = {
 const MISSIONS = {
     mro: {
         model: { name: 'orbiter-mmgis', mission: 'MRO', jar: `${EX}/05-orbiter/build/libs/orbiter-example.jar` },
-        goal: {
-            name: 'ScheduleTargetObservations',
-            jar: `${EX}/05-orbiter/scheduling/build/libs/ScheduleTargetObservations.jar`,
-            description: 'MRO closest sub-spacecraft pass per GeoJSON target → TakeRadarObservation (not footprint coverage).',
-        },
+        goals: [
+            {
+                name: 'ScheduleTargetObservations',
+                jar: `${EX}/05-orbiter/scheduling/build/libs/ScheduleTargetObservations.jar`,
+                description: 'MRO closest sub-spacecraft pass per GeoJSON target → TakeRadarObservation (not footprint coverage).',
+            },
+        ],
         plans: [{ name: 'MRO base plan (MMGIS demo)', file: `${EX}/05-orbiter/demo/plans/SimplePlan.json` }],
     },
     hopper: {
         model: { name: 'hopper-mmgis', mission: 'Hopper', jar: `${EX}/04-hopper/build/libs/hopper.jar` },
-        goal: {
-            name: 'ScheduleHopTraverse',
-            jar: `${EX}/04-hopper/scheduling/build/libs/ScheduleHopTraverse.jar`,
-            description: 'Lunar hopper: hop to each GeoJSON site and image it (illustrative hop timing, see HopModel).',
-        },
+        goals: [
+            {
+                name: 'ScheduleHopTraverse',
+                jar: `${EX}/04-hopper/scheduling/build/libs/ScheduleHopTraverse.jar`,
+                description: 'Lunar hopper: hop to each GeoJSON site and image it (illustrative hop timing, see HopModel).',
+            },
+            {
+                name: 'ScheduleStorageDownlinks',
+                jar: `${EX}/04-hopper/scheduling/build/libs/ScheduleStorageDownlinks.jar`,
+                description: 'Lunar hopper: add Downlink passes in free contact windows (illustrative schedule) to keep simulated onboard storage below a limit.',
+            },
+        ],
         constraints: [
             { name: 'MinBatterySOC (hopper)', jar: `${EX}/04-hopper/constraints/build/libs/MinBatterySOC.jar`, arguments: { minSOC: 80 } },
             { name: 'OnboardStorageFull (hopper)', jar: `${EX}/04-hopper/constraints/build/libs/OnboardStorageFull.jar`, arguments: { fractionFull: 0.99 } },
@@ -52,28 +61,35 @@ const MISSIONS = {
             { name: 'Hopper base plan (MMGIS demo)', ...HOPPER_PLAN },
             {
                 // An "existing" plan as a PlanDev user would build it, without MMGIS: ops activities placed by
-                // hand, plus the traverse goal in the scheduling spec with sites typed in as GeoJSON.
-                name: 'Reiner Gamma ops (existing plan)',
+                // hand, plus two goals in the scheduling spec, in order: the traverse (sites typed in as
+                // GeoJSON), then storage downlinks, which simulate the traverse's output.
+                name: 'Reiner Gamma ops (traverse + downlinks)',
                 ...HOPPER_PLAN,
                 activities: [
                     { name: 'Camera calibration', type: 'TakePicture', start_offset: '00:20:00', arguments: { durationSeconds: 60, dataRateBps: 2e7, siteId: '' } },
                     { name: 'DSN pass 1', type: 'Downlink', start_offset: '06:00:00', arguments: { duration: 3600e6 } },
                     { name: 'DSN pass 2', type: 'Downlink', start_offset: '30:00:00', arguments: { duration: 3600e6 } },
                 ],
-                goalArguments: {
-                    sites: JSON.stringify({
-                        type: 'FeatureCollection',
-                        features: [
-                            ['west-swirl', 'West swirl', -59.35, 7.45],
-                            ['dark-lane', 'Dark lane', -59.3, 7.2],
-                            ['reiner-rim', 'Reiner rim', -58.85, 7.1],
-                        ].map(([id, name, lon, lat]) => ({ type: 'Feature', id, properties: { id, name }, geometry: { type: 'Point', coordinates: [lon, lat] } })),
-                    }),
-                    order: 'AS_DRAWN',
-                    startAfter: 3600e6,
-                    restAfterHop: 1800e6,
-                    pictureDuration: 120e6,
-                },
+                goals: [
+                    {
+                        name: 'ScheduleHopTraverse',
+                        arguments: {
+                            sites: JSON.stringify({
+                                type: 'FeatureCollection',
+                                features: [
+                                    ['west-swirl', 'West swirl', -59.35, 7.45],
+                                    ['dark-lane', 'Dark lane', -59.3, 7.2],
+                                    ['reiner-rim', 'Reiner rim', -58.85, 7.1],
+                                ].map(([id, name, lon, lat]) => ({ type: 'Feature', id, properties: { id, name }, geometry: { type: 'Point', coordinates: [lon, lat] } })),
+                            }),
+                            order: 'AS_DRAWN',
+                            startAfter: 3600e6,
+                            restAfterHop: 1800e6,
+                            pictureDuration: 120e6,
+                        },
+                    },
+                    { name: 'ScheduleStorageDownlinks', arguments: { maxFraction: 0.9 } },
+                ],
             },
         ],
     },
@@ -125,20 +141,21 @@ async function upsertConstraint(pd, c) {
 async function setup(pd, key) {
     const cfg = MISSIONS[key]
     const constraints = cfg.constraints || []
-    for (const f of [cfg.model.jar, cfg.goal.jar, ...constraints.map((c) => c.jar)]) {
+    for (const f of [cfg.model.jar, ...cfg.goals.map((g) => g.jar), ...constraints.map((c) => c.jar)]) {
         if (!fs.existsSync(f)) throw new Error(`${f} missing — see integrations/mmgis/README.md "Build"`)
     }
     const modelId = await upsertModel(pd, cfg.model)
-    const goalId = await upsertGoal(pd, cfg.goal)
+    const goalIds = {}
+    for (const g of cfg.goals) goalIds[g.name] = await upsertGoal(pd, g)
     for (const c of constraints) c.id = await upsertConstraint(pd, c)
-    console.log(`[${key}] model ${modelId}, goal ${goalId}${constraints.length ? `, constraints ${constraints.map((c) => c.id)}` : ''}`)
+    console.log(`[${key}] model ${modelId}, goals ${JSON.stringify(goalIds)}${constraints.length ? `, constraints ${constraints.map((c) => c.id)}` : ''}`)
 
     const ids = []
-    for (const p of cfg.plans) ids.push(await upsertPlan(pd, key, modelId, goalId, constraints, p))
-    console.log(`[${key}] MMGIS backend env:\n  PLANDEV_${key.toUpperCase()}_BASE_PLAN_ID=${ids[0]}\n  PLANDEV_${key.toUpperCase()}_GOAL_ID=${goalId}`)
+    for (const p of cfg.plans) ids.push(await upsertPlan(pd, key, modelId, goalIds, constraints, p))
+    console.log(`[${key}] MMGIS backend env:\n  PLANDEV_${key.toUpperCase()}_BASE_PLAN_ID=${ids[0]}`)
 }
 
-async function upsertPlan(pd, key, modelId, goalId, constraints, cfg) {
+async function upsertPlan(pd, key, modelId, goalIds, constraints, cfg) {
     const { plan: plans } = await pd.gql(`query($n:String!,$m:Int!){ plan(where:{name:{_eq:$n}, model_id:{_eq:$m}}){ id } }`, { n: cfg.name, m: modelId })
     if (plans[0]) return plans[0].id
     let planId
@@ -161,11 +178,13 @@ async function upsertPlan(pd, key, modelId, goalId, constraints, cfg) {
         await pd.gql(`mutation($o:[activity_directive_insert_input!]!){ insert_activity_directive(objects:$o){ affected_rows } }`, {
             o: cfg.activities.map((a) => ({ ...a, plan_id: planId })),
         })
-    if (cfg.goalArguments) {
+    if (cfg.goals?.length) {
         const spec = (await pd.gql(`query($p:Int!){ plan_by_pk(id:$p){ scheduling_specification{ id } } }`, { p: planId })).plan_by_pk.scheduling_specification
-        await pd.gql(`mutation($g:scheduling_specification_goals_insert_input!){ insert_scheduling_specification_goals_one(object:$g){ goal_invocation_id } }`, {
-            g: { specification_id: spec.id, goal_id: goalId, arguments: cfg.goalArguments, enabled: true, priority: 0 },
-        })
+        // In list order: each goal is simulated after (simulate_after defaults to true), so later goals see earlier output.
+        for (const g of cfg.goals)
+            await pd.gql(`mutation($g:scheduling_specification_goals_insert_input!){ insert_scheduling_specification_goals_one(object:$g){ goal_invocation_id } }`, {
+                g: { specification_id: spec.id, goal_id: goalIds[g.name], arguments: g.arguments, enabled: true },
+            })
         console.log(`[${key}] created plan ${planId}; scheduling and simulating…`)
         await createCandidates(pd, []).scheduleAndSimulate(planId)
     } else {

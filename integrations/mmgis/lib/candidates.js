@@ -1,12 +1,14 @@
 // Mission-independent PlanDev workflow for spatial planning on existing plans:
 //   - read any plan of a configured mission model, at a consistent plan revision / simulation dataset;
-//   - derive a candidate from it (duplicate, replace the mission goal's earlier output, schedule, simulate);
-//   - evaluate it read-only against spatial inputs.
-// Mission meaning (goal arguments, geometry, metrics, evaluation) comes from the adapter.
+//   - explore an alternative on a working branch: duplicate the plan once, then set the mission goals'
+//     inputs, run the plan's whole scheduling specification and simulate, as often as needed;
+//   - evaluate a plan read-only against spatial inputs.
+// Mission meaning (which goals take map inputs, geometry, metrics, evaluation) comes from the adapter.
 //
-// All durable state lives in PlanDev (plans and parent_id lineage, the snapshot duplicate_plan takes,
-// spec-goal arguments, directives' source goal invocation, scheduling requests, simulation datasets).
-// This module keeps only in-flight promises, run errors, and a cache of immutable dataset reads.
+// All durable state lives in PlanDev: plans and parent_id lineage, the snapshot duplicate_plan takes,
+// spec-goal arguments, directives' source goal invocation (which PlanDev's goal auto-delete uses to
+// replace a goal's earlier output), scheduling requests, simulation datasets, and a plan tag marking a
+// working branch. This module keeps only in-flight promises, run errors, and a cache of dataset reads.
 'use strict'
 const { sleep } = require('./plandev')
 const { intervalToSec, checkParams, normalizeTargets } = require('./util')
@@ -22,9 +24,14 @@ const STYLE_BY_BASIS = {
     analysis: { color: '#ffea00', fillColor: '#ffea00', weight: 2, dashArray: '4 4', fillOpacity: 0.15 },
 }
 
+// A plan with this tag is a working branch: the integration may re-run its goals with new inputs.
+// Any other plan (a source plan, a kept alternative) is only ever branched from, never changed.
+const EXPLORING_TAG = 'mmgis-exploring'
+
 function createCandidates(pd, missions) {
-    // missions: [{ adapter, goalId, basePlanId }]; the base plan identifies the mission model and is the
-    // default plan to show; any plan of that model can be inspected, evaluated or revised.
+    // missions: [{ adapter, basePlanId }]; the base plan identifies the mission model and is the default
+    // plan to show; any plan of that model can be inspected, evaluated or explored. adapter.goals names the
+    // scheduling goals that take the map's inputs.
     const inflight = new Map() // planId → promise (only to avoid double-driving in this process)
     const runErrors = new Map() // planId → message, for failures before PlanDev records a request
     const profileCache = new Map()
@@ -38,7 +45,7 @@ function createCandidates(pd, missions) {
     async function plan(planId) {
         const d = await pd.gql(
             `query($id:Int!){ plan_by_pk(id:$id){ id revision name description parent_id model_id start_time duration created_at owner
-               scheduling_specification{ id revision } simulations{ id } } }`,
+               scheduling_specification{ id revision } simulations{ id } tags{ tag{ name } } } }`,
             { id: planId },
         )
         if (!d.plan_by_pk) throw new Error(`plan ${planId} not found or not visible to ${pd.username}`)
@@ -82,82 +89,125 @@ function createCandidates(pd, missions) {
             )
         ).scheduling_specification_goals
 
-    // ---------- candidates: derived from any plan ----------
+    /** Goal ids by adapter goal name (a name may have several metadata rows; any of them counts). */
+    async function goalIds(m) {
+        if (!m.goalIds) {
+            const names = m.adapter.goals.map((g) => g.name)
+            const d = await pd.gql(`query($n:[String!]!){ scheduling_goal_metadata(where:{name:{_in:$n}}, order_by:{id:desc}){ id name } }`, { n: names })
+            m.goalIds = Object.fromEntries(names.map((n) => [n, d.scheduling_goal_metadata.filter((g) => g.name === n).map((g) => g.id)]))
+            for (const n of names) if (!m.goalIds[n].length) throw new Error(`scheduling goal ${n} is not in PlanDev (see scripts/setup-plandev.js)`)
+        }
+        return m.goalIds
+    }
+
+    /** The plan's spec-goal arguments for each adapter goal: { name: arguments | null }. */
+    async function goalArgsByName(m, goals) {
+        const ids = await goalIds(m)
+        return Object.fromEntries(m.adapter.goals.map((g) => [g.name, goals.find((x) => ids[g.name].includes(x.goal_id))?.arguments ?? null]))
+    }
+
+    async function tagId() {
+        const d = await pd.gql(`query($n:String!){ tags(where:{name:{_eq:$n}}){ id } }`, { n: EXPLORING_TAG })
+        if (d.tags[0]) return d.tags[0].id
+        return (await pd.gql(`mutation($n:String!){ insert_tags_one(object:{name:$n, color:"#ff9100"}){ id } }`, { n: EXPLORING_TAG })).insert_tags_one.id
+    }
+
+    const isExploring = (p) => (p.tags || []).some((t) => t.tag.name === EXPLORING_TAG)
+
+    function checkRevision(p, expectedRevision) {
+        if (expectedRevision != null && p.revision !== expectedRevision)
+            throw new Error(`plan ${p.id} is now at revision ${p.revision}, not ${expectedRevision} as shown; reload before changing it`)
+    }
 
     /**
-     * Duplicate `sourcePlanId` and re-run the mission goal on the copy with new inputs. The source is
-     * not modified. Directives the source's own invocation of that goal created (PlanDev's
-     * source_scheduling_goal_invocation_id) are removed from the copy first; every other directive stays.
+     * Write the map's inputs into the plan's own invocations of the adapter's goals (merged into their
+     * existing arguments; enabled state, order and other goals untouched). A goal the spec lacks is
+     * appended. Two invocations of one adapter goal is ambiguous and refused.
      */
-    async function createCandidate(sourcePlanId, { mission, targets, params, requestedBy, label, expectedRevision }) {
+    async function applyInputs(p, m, targets, params) {
+        const fc = normalizeTargets(targets, m.adapter.targets)
+        const pv = checkParams(m.adapter.params, params)
+        const ids = await goalIds(m)
+        const goals = await specGoals(p.scheduling_specification.id)
+        for (const g of m.adapter.goals) {
+            const args = g.arguments(fc, pv)
+            const mine = goals.filter((x) => ids[g.name].includes(x.goal_id))
+            if (mine.length > 1) throw new Error(`plan ${p.id}'s scheduling specification has ${mine.length} ${g.name} goals; expected one`)
+            if (mine[0])
+                await pd.gql(`mutation($id:Int!,$a:jsonb!){ update_scheduling_specification_goals_by_pk(pk_columns:{goal_invocation_id:$id}, _set:{arguments:$a}){ goal_invocation_id } }`, {
+                    id: mine[0].goal_invocation_id,
+                    a: { ...mine[0].arguments, ...args },
+                })
+            else
+                await pd.gql(`mutation($g:scheduling_specification_goals_insert_input!){ insert_scheduling_specification_goals_one(object:$g){ goal_invocation_id } }`, {
+                    g: { specification_id: p.scheduling_specification.id, goal_id: ids[g.name][0], arguments: args, enabled: true },
+                })
+        }
+    }
+
+    function run(planId) {
+        if (inflight.has(planId)) throw new Error(`plan ${planId} is already being scheduled and simulated`)
+        runErrors.delete(planId)
+        const r = scheduleAndSimulate(planId)
+            .catch((e) => {
+                runErrors.set(planId, e.message)
+                console.error(`[plandev] plan ${planId}: ${e.message}`)
+            })
+            .finally(() => inflight.delete(planId))
+        inflight.set(planId, r)
+    }
+
+    // ---------- exploration: working branches are ordinary PlanDev plans ----------
+
+    /**
+     * Branch `sourcePlanId` into a new working branch and run its scheduling specification with the map's
+     * inputs. duplicate_plan copies directives, the scheduling and constraint specifications, and maps each
+     * goal-created directive to the branch's own goal invocation, so the goals replace their earlier
+     * output there; everything else is kept. The source is not modified.
+     */
+    async function explore(sourcePlanId, { mission, targets, params, requestedBy, label, expectedRevision }) {
         const src = await plan(sourcePlanId)
         const m = await missionForPlan(src, mission)
-        if (expectedRevision != null && src.revision !== expectedRevision)
-            throw new Error(`plan ${src.id} is now at revision ${src.revision}, not ${expectedRevision} as shown; reload before revising it`)
-        const fc = normalizeTargets(targets, m.adapter.targets)
-        const args = m.adapter.goalArguments(fc, checkParams(m.adapter.params, params))
-        const goals = await specGoals(src.scheduling_specification.id)
-        const prior = goals.filter((g) => g.goal_id === m.goalId)
-
+        checkRevision(src, expectedRevision)
+        normalizeTargets(targets, m.adapter.targets) // validate before creating anything
+        checkParams(m.adapter.params, params)
         const n = (await pd.gql(`query($p:Int!){ plan_aggregate(where:{parent_id:{_eq:$p}}){ aggregate{ count } } }`, { p: src.id })).plan_aggregate.aggregate.count + 1
-        const name = `${src.name.split(' · ')[0]} · from #${src.id} · ${label ? String(label).slice(0, 60) : `revision ${n}`}`
+        const name = `${src.name.split(' · ')[0]} · from #${src.id} · ${label ? String(label).slice(0, 60) : `alternative ${n}`}`
         // ponytail: revision checked just before duplicating, not atomically with it; a PlanDev-side check if edits race this
         const dup = await pd.gql(`mutation($p:Int!,$n:String!){ duplicate_plan(args:{plan_id:$p, new_plan_name:$n}){ new_plan_id } }`, { p: src.id, n: name })
         const planId = dup.duplicate_plan.new_plan_id
-
-        // duplicate_plan copies directives with their source goal invocation ids, but those point at the
-        // *source* plan's spec goals; the copy's own invocation can't adopt them (the column isn't
-        // writable), so the goal's ActivityAutoDelete would not see them. Remove them here instead.
-        let replaced = 0
-        if (prior.length) {
-            const old = await pd.gql(`query($p:Int!,$i:[Int!]!){ activity_directive(where:{plan_id:{_eq:$p}, source_scheduling_goal_invocation_id:{_in:$i}}){ id } }`, {
-                p: planId,
-                i: prior.map((g) => g.goal_invocation_id),
-            })
-            const ids = old.activity_directive.map((a) => a.id)
-            if (ids.length) {
-                // Anything anchored to a removed directive is re-anchored to plan start at the same time.
-                await pd.gql(`mutation($ids:_int4!,$p:Int!){ delete_activity_by_pk_reanchor_plan_start_bulk(args:{_activity_ids:$ids, _plan_id:$p}){ change_type } }`, {
-                    ids: `{${ids.join(',')}}`,
-                    p: planId,
-                })
-                replaced = ids.length
-            }
-        }
-
-        await pd.gql(`mutation($id:Int!,$d:String!){ update_plan_by_pk(pk_columns:{id:$id}, _set:{description:$d}){ id } }`, {
+        await pd.gql(`mutation($id:Int!,$d:String!,$t:Int!){
+            update_plan_by_pk(pk_columns:{id:$id}, _set:{description:$d}){ id }
+            insert_plan_tags_one(object:{plan_id:$id, tag_id:$t}, on_conflict:{constraint:plan_tags_pkey, update_columns:[]}){ tag_id } }`, {
             id: planId,
-            d:
-                `Derived from plan ${src.id} (revision ${src.revision}) by ${requestedBy} via the PlanDev MMGIS adapter (${m.adapter.key}). ` +
-                `${replaced} directive(s) created by the source's ${m.adapter.key} goal were replaced; the goal's arguments hold the new GeoJSON inputs.`,
+            t: await tagId(),
+            d: `Working branch of plan ${src.id} (revision ${src.revision}), explored by ${requestedBy} in MMGIS (${m.adapter.key}). ` +
+               `The ${m.adapter.goals.map((g) => g.name).join(' and ')} goals' arguments hold the map's inputs.`,
         })
-        // duplicate_plan (v4.5) copies activities and simulation arguments but not the plan's constraint
-        // or scheduling specification; copy both so the candidate is checked and scheduled like its source.
-        const cs = await pd.gql(`query($p:Int!){ constraint_specification(where:{plan_id:{_eq:$p}}){ constraint_id constraint_revision arguments enabled order } }`, { p: src.id })
-        if (cs.constraint_specification.length)
-            await pd.gql(`mutation($o:[constraint_specification_insert_input!]!){ insert_constraint_specification(objects:$o){ affected_rows } }`, {
-                o: cs.constraint_specification.map((c) => ({ ...c, plan_id: planId })),
-            })
-        const spec = (await plan(planId)).scheduling_specification
-        const others = goals.filter((g) => g.goal_id !== m.goalId)
-        const priority = prior[0]?.priority ?? Math.max(-1, ...others.map((g) => g.priority)) + 1
-        await pd.gql(`mutation($o:[scheduling_specification_goals_insert_input!]!){ insert_scheduling_specification_goals(objects:$o){ affected_rows } }`, {
-            o: [
-                { goal_id: m.goalId, arguments: args, enabled: true, priority, specification_id: spec.id },
-                // Other goals are kept for the record but disabled: their earlier output was copied as-is,
-                // and re-running them here would add to it rather than replace it.
-                ...others.map(({ goal_invocation_id, ...g }) => ({ ...g, enabled: false, specification_id: spec.id })),
-            ],
-        })
+        const p = await plan(planId)
+        await applyInputs(p, m, targets, params)
+        run(planId)
+        return { planId, sourcePlanId: src.id, sourceRevision: src.revision }
+    }
 
-        const run = scheduleAndSimulate(planId)
-            .catch((e) => {
-                runErrors.set(planId, e.message)
-                console.error(`[plandev] candidate ${planId}: ${e.message}`)
-            })
-            .finally(() => inflight.delete(planId))
-        inflight.set(planId, run)
-        return { planId, sourcePlanId: src.id, sourceRevision: src.revision, replacedDirectives: replaced }
+    /** Re-run a working branch with new inputs. Refuses any plan that is not a working branch. */
+    async function update(planId, { mission, targets, params, expectedRevision }) {
+        const p = await plan(planId)
+        const m = await missionForPlan(p, mission)
+        if (!isExploring(p)) throw new Error(`plan ${p.id} is not a working branch; explore an alternative from it instead`)
+        checkRevision(p, expectedRevision)
+        if (inflight.has(planId)) throw new Error(`plan ${planId} is already being scheduled and simulated`)
+        await applyInputs(p, m, targets, params)
+        run(planId)
+        return { planId, fromRevision: p.revision }
+    }
+
+    /** Stop treating a working branch as one: it stays an ordinary PlanDev plan and can still be branched from. */
+    async function keep(planId) {
+        const p = await plan(planId)
+        await missionForPlan(p)
+        await pd.gql(`mutation($p:Int!,$t:Int!){ delete_plan_tags(where:{plan_id:{_eq:$p}, tag_id:{_eq:$t}}){ affected_rows } }`, { p: planId, t: await tagId() })
+        return { planId }
     }
 
     async function scheduleAndSimulate(planId) {
@@ -182,12 +232,25 @@ function createCandidates(pd, missions) {
         )
     }
 
-    /** Every plan of the mission's model visible to the integration, with lineage. */
+    /**
+     * Every plan of the mission's model visible to the integration: lineage, whether it is a working
+     * branch, and its latest simulation dataset, so a client can tell when a plan's results change.
+     */
     async function plans(missionKey) {
-        const d = await pd.gql(`query($m:Int!){ plan(where:{model_id:{_eq:$m}}, order_by:{id:asc}){ id name parent_id revision owner updated_at } }`, {
-            m: await modelOf(byKey(missionKey)),
+        const d = await pd.gql(
+            `query($m:Int!){ plan(where:{model_id:{_eq:$m}}, order_by:{id:asc}){ id name parent_id revision owner updated_at tags{ tag{ name } }
+               simulations{ simulation_datasets(order_by:{id:desc}, limit:1){ id status plan_revision } } } }`,
+            { m: await modelOf(byKey(missionKey)) },
+        )
+        return d.plan.map(({ tags, simulations, ...p }) => {
+            const ds = simulations[0]?.simulation_datasets[0] || null
+            return {
+                ...p,
+                exploring: isExploring({ tags }),
+                running: inflight.has(p.id),
+                latest: ds && { simulationDatasetId: ds.id, status: ds.status, planRevision: ds.plan_revision, stale: ds.plan_revision !== p.revision },
+            }
         })
-        return d.plan
     }
 
     // ---------- reads (generic) ----------
@@ -273,9 +336,11 @@ function createCandidates(pd, missions) {
     const ops = { profiles, spans, directives }
 
     /**
-     * Everything an adapter may read about one plan + dataset. When the dataset simulated an older plan
-     * revision, the current plan state (directives, goal inputs) no longer describes it: adapters get
-     * only what the dataset itself recorded (spans with their arguments, profiles).
+     * Everything an adapter may read about one plan + dataset. Goal inputs (spec-goal arguments) are
+     * not versioned with datasets, so they are given to the adapter only when they demonstrably produced
+     * this dataset: it simulated the current plan revision, and the last scheduling run succeeded with
+     * the specification as it is now. Otherwise adapters get only what the dataset itself recorded (spans
+     * with their arguments, profiles) — and, for an older revision, no current directives either.
      */
     async function context(planId, simulationDatasetId, mission = null) {
         const p = await plan(planId)
@@ -283,24 +348,26 @@ function createCandidates(pd, missions) {
         const dataset = simulationDatasetId != null ? await datasetOfPlan(p, simulationDatasetId) : await latestDataset(p)
         const stale = dataset != null && dataset.plan_revision !== p.revision
         const g = await pd.gql(
-            `query($s:Int!,$g:Int!){
-               scheduling_specification_goals(where:{specification_id:{_eq:$s}, goal_id:{_eq:$g}}){ arguments }
-               scheduling_request(where:{specification_id:{_eq:$s}}, order_by:{analysis_id:desc}, limit:1){ analysis_id status reason requested_at specification_revision } }`,
-            { s: p.scheduling_specification.id, g: m.goalId },
+            `query($s:Int!){ scheduling_request(where:{specification_id:{_eq:$s}}, order_by:{analysis_id:desc}, limit:1){
+               analysis_id status reason requested_at specification_revision plan_revision } }`,
+            { s: p.scheduling_specification.id },
         )
-        const goalArgs = g.scheduling_specification_goals[0]?.arguments || null
+        const scheduling = g.scheduling_request[0] || null
+        const goalArgs = await goalArgsByName(m, await specGoals(p.scheduling_specification.id))
+        const inputsCurrent =
+            dataset != null && !stale && !inflight.has(p.id) && scheduling?.status === 'success' && scheduling.specification_revision === p.scheduling_specification.revision
         const startMs = Date.parse(p.start_time)
         const ctx = {
             ops: stale ? { ...ops, directives: async () => [] } : ops,
             plan: p,
             dataset,
             stale,
-            goalArgs: stale ? null : goalArgs,
+            goalArgs: inputsCurrent ? goalArgs : null,
             startMs,
             durationSec: intervalToSec(p.duration),
             iso: (sec) => new Date(startMs + sec * 1000).toISOString(),
         }
-        return { p, m, dataset, stale, goalArgs, scheduling: g.scheduling_request[0] || null, ctx }
+        return { p, m, dataset, stale, goalArgs, inputsCurrent, scheduling, ctx }
     }
 
     function provenance(p, m, dataset) {
@@ -335,12 +402,23 @@ function createCandidates(pd, missions) {
         return { id: parent.id, name: parent.name, revisionNow: parent.revision, revisionAtDerivation: d.plan_snapshot[0]?.revision ?? null, sameModel: parent.model_id === p.model_id }
     }
 
+    /** The plan's simulation datasets, newest first, each identified by the plan revision it simulated. */
+    async function history(p) {
+        if (!p.simulations[0]) return []
+        const d = await pd.gql(
+            `query($s:Int!){ simulation_dataset(where:{simulation_id:{_eq:$s}}, order_by:{id:desc}, limit:12){ id status plan_revision requested_at } }`,
+            { s: p.simulations[0].id },
+        )
+        return d.simulation_dataset.map((x) => ({ simulationDatasetId: x.id, status: x.status, planRevision: x.plan_revision, requestedAt: x.requested_at, current: x.plan_revision === p.revision }))
+    }
+
     // ---------- the plan view: everything a map needs about one plan + dataset ----------
 
     async function view(planId, simulationDatasetId = null, mission = null) {
-        const { p, m, dataset, stale, goalArgs, scheduling, ctx } = await context(planId, simulationDatasetId, mission)
+        const { p, m, dataset, stale, goalArgs, inputsCurrent, scheduling, ctx } = await context(planId, simulationDatasetId, mission)
         const a = m.adapter
         const derivedFrom = await lineage(p)
+        const anyArgs = Object.values(goalArgs).some(Boolean)
         const out = {
             mission: { key: a.key, label: a.label },
             provenance: provenance(p, m, dataset),
@@ -348,11 +426,15 @@ function createCandidates(pd, missions) {
             derivedFrom,
             status: status(p.id, scheduling, dataset, stale),
             stale,
+            exploring: isExploring(p),
             scheduling,
             // Spec-goal arguments are not versioned with the plan; flag edits made after the last scheduling run.
             inputsEditedSinceScheduling: scheduling ? scheduling.specification_revision !== p.scheduling_specification.revision : null,
             simulation: dataset,
-            inputs: goalArgs ? a.inputsFromGoalArguments(goalArgs) : null,
+            // The goals' current arguments, to start an edit from; inputsCurrent says whether they produced this dataset.
+            inputs: anyArgs ? a.inputsFromGoalArguments(goalArgs) : null,
+            inputsCurrent,
+            history: await history(p),
             features: [],
             position: null,
             table: null,
@@ -366,6 +448,11 @@ function createCandidates(pd, missions) {
                 out.notes.unshift({
                     warn: true,
                     text: `Simulation dataset ${dataset.id} is of plan revision ${dataset.plan_revision}; the plan is now at revision ${p.revision}. Showing only what that simulation recorded — current goal inputs and directive details are omitted. Re-simulate for the current plan.`,
+                })
+            else if (!inputsCurrent && anyArgs)
+                out.notes.unshift({
+                    warn: true,
+                    text: 'The goals’ inputs changed after this simulation’s scheduling run (or are being re-run), so they are not drawn: PlanDev does not record which inputs a scheduling run used.',
                 })
             const metrics = await a.metrics(ctx)
             // Compare against the plan this one was derived from, at its latest simulation.
@@ -402,6 +489,7 @@ function createCandidates(pd, missions) {
         // While this process drives a candidate, the scheduler's own simulation datasets can appear and
         // finish first; only the dataset requested after scheduling counts, so report running until then.
         if (inflight.has(planId)) return 'running'
+        if (['pending', 'incomplete'].includes(scheduling?.status)) return 'running'
         if (scheduling?.status === 'failed' && !dataset) return 'scheduling failed'
         if (!dataset) return 'not simulated'
         if (dataset.status === 'success') return stale ? 'stale' : 'complete'
@@ -409,7 +497,9 @@ function createCandidates(pd, missions) {
     }
 
     return {
-        createCandidate,
+        explore,
+        update,
+        keep,
         scheduleAndSimulate,
         plans,
         view,
@@ -422,7 +512,7 @@ function createCandidates(pd, missions) {
             return {
                 mission: { key, label: a.label, help: a.help },
                 defaultPlanId: m.basePlanId,
-                goalId: m.goalId,
+                goals: a.goals.map((g) => g.name),
                 params: a.params,
                 targets: a.targets,
                 evaluation: a.evaluation ? { help: a.evaluation.help, targets: a.evaluation.targets, params: a.evaluation.params } : null,
