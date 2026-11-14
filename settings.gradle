@@ -25,4 +25,7 @@ include 'examples:07-external-events'
 include 'examples:08-advanced-resources'
 include 'examples:09-activity-patterns'
 include 'examples:10-testing-patterns'
+include 'examples:11-rover'
+include 'examples:11-rover:scheduling'
+include 'examples:11-rover:constraints'
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // One-time MMGIS setup for the PlanDev demo: create the first SuperAdmin (if none) and the
-// Mars-PlanDev and Moon-PlanDev missions (basemap + Draw + PlanDev tools). Uses MMGIS's own HTTP APIs.
+// Mars-PlanDev, Moon-PlanDev and Jezero-PlanDev missions (basemap + Draw + PlanDev tools). Uses MMGIS's own HTTP APIs.
 //
 //   MMGIS_URL=http://localhost:8888 MMGIS_ADMIN=admin MMGIS_ADMIN_PASSWORD='...' MMGIS_SETUP_CODE=... \
 //     node scripts/setup-mmgis.js
@@ -8,7 +8,7 @@
 const path = require('path')
 
 const URL_ = (process.env.MMGIS_URL || 'http://localhost:8888').replace(/\/$/, '')
-const MISSIONS = ['Mars-PlanDev', 'Moon-PlanDev']
+const MISSIONS = ['Mars-PlanDev', 'Moon-PlanDev', 'Jezero-PlanDev']
 const user = process.env.MMGIS_ADMIN || 'admin'
 const pass = process.env.MMGIS_ADMIN_PASSWORD
 let cookie = ''

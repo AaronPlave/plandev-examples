@@ -1,0 +1,105 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+
+plugins {
+  id 'java'
+  id 'io.github.goooler.shadow' version '8.1.7'
+}
+
+java {
+  toolchain {
+    languageVersion = JavaLanguageVersion.of(21)
+  }
+}
+
+dependencies {
+  // pull in any helper / utils from the mission model
+  implementation project(':examples:11-rover')
+
+  // procedural scheduling libraries
+  annotationProcessor "gov.nasa.ammos.plandev.procedural:processor:" + project.plandevVersion
+  implementation "gov.nasa.ammos.plandev.procedural:scheduling:" + project.plandevVersion
+  implementation "gov.nasa.ammos.plandev.procedural:timeline:" + project.plandevVersion
+  implementation "gov.nasa.ammos.plandev.procedural:constraints:" + project.plandevVersion
+
+  // standard plandev deps
+  implementation 'gov.nasa.ammos.plandev:merlin-framework:' + project.plandevVersion
+  implementation 'gov.nasa.ammos.plandev:contrib:' + project.plandevVersion
+  implementation 'gov.nasa.ammos.plandev:type-utils:' + project.plandevVersion
+
+  testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
+}
+
+test {
+  useJUnitPlatform()
+}
+
+tasks.register('buildAllConstraintProcedureJars') {
+  group = 'ConstraintProcedureJars'
+
+  dependsOn "generateConstraintProcedureJarTasks"
+  dependsOn {
+    tasks.findAll { task -> task.name.startsWith('buildConstraintProcedureJar_') }
+  }
+}
+
+tasks.create("generateConstraintProcedureJarTasks") {
+  group = 'ConstraintProcedureJars'
+
+  final proceduresDir = findFirstMatchingBuildDir("generated/procedures")
+
+  final procedureFiles = proceduresDir == null ? [] : (file(proceduresDir).listFiles() ?: []).toList()
+
+  // Nothing to package yet. This closure is evaluated at *configuration* time on every Gradle
+  // invocation -- including a clean `./gradlew build`, long before the annotation processor has
+  // emitted anything -- so it must not throw here. Defer the failure to execution time so that
+  // asking for the JARs and getting none is a hard error instead of a silent no-op.
+  if (procedureFiles.isEmpty()) {
+    doLast {
+      throw new GradleException(
+        "No generated constraint procedures found under build/generated/sources.\n" +
+        "Procedures are discovered at configuration time, so this needs two invocations:\n" +
+        "  ./gradlew ${project.path}:compileJava\n" +
+        "  ./gradlew ${project.path}:buildAllConstraintProcedureJars")
+    }
+    return
+  }
+
+  println "Generating jar tasks for the following procedures directory: ${proceduresDir}"
+
+  final files = procedureFiles
+
+  files.toList().each { file ->
+    final nameWithoutExtension = file.name.replace(".java", "")
+    final taskName = "buildConstraintProcedureJar_${nameWithoutExtension}"
+
+    println "Generating ${taskName} task, which will build ${nameWithoutExtension}.jar"
+
+    tasks.register(taskName, ShadowJar) {
+      group = 'ConstraintProcedureJars'
+      configurations = [project.configurations.compileClasspath, project.configurations.runtimeClasspath]
+      from sourceSets.main.output
+      archiveBaseName = "" // clear
+      archiveClassifier.set(nameWithoutExtension) // set output jar name
+      manifest {
+        attributes 'Main-Class': getMainClassFromGeneratedFile(file)
+      }
+      minimize()
+    }
+  }
+}
+
+private String findFirstMatchingBuildDir(String pattern) {
+  String found = null
+  final generatedDir = file("build/generated/sources")
+  generatedDir.mkdirs()
+  generatedDir.eachDirRecurse { dir -> if (dir.path.contains(pattern)) found = dir.path }
+  return found
+}
+
+private static String getMainClassFromGeneratedFile(File file) {
+  final fileString = file.toString()
+  final prefix = "build/generated/sources/annotationProcessor/java/main/"
+  final index = fileString.indexOf(prefix) + prefix.length()
+  final trimmed = fileString.substring(index).replace(".java", "")
+  return trimmed.replace("/", ".")
+}

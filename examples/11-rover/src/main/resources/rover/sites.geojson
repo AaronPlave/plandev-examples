@@ -1,0 +1,12 @@
+{
+  "type": "FeatureCollection",
+  "description": "Science sites known to the rover example. Locations are approximate and for illustration; they are not mission coordinates. priority: 1 (low) to 3 (high).",
+  "features": [
+    { "type": "Feature", "id": "delta-front", "properties": { "name": "Delta front", "priority": 3 }, "geometry": { "type": "Point", "coordinates": [77.402, 18.458] } },
+    { "type": "Feature", "id": "delta-top", "properties": { "name": "Delta top", "priority": 2 }, "geometry": { "type": "Point", "coordinates": [77.365, 18.497] } },
+    { "type": "Feature", "id": "margin-unit", "properties": { "name": "Margin unit", "priority": 2 }, "geometry": { "type": "Point", "coordinates": [77.33, 18.47] } },
+    { "type": "Feature", "id": "neretva-vallis", "properties": { "name": "Neretva Vallis inlet", "priority": 3 }, "geometry": { "type": "Point", "coordinates": [77.29, 18.505] } },
+    { "type": "Feature", "id": "crater-floor", "properties": { "name": "Crater floor south", "priority": 1 }, "geometry": { "type": "Point", "coordinates": [77.47, 18.4] } },
+    { "type": "Feature", "id": "west-rim", "properties": { "name": "West rim", "priority": 3 }, "geometry": { "type": "Point", "coordinates": [77.24, 18.45] } }
+  ]
+}

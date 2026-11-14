@@ -1,0 +1,94 @@
+{
+  "msv": {
+    "site": "Jezero",
+    "view": [
+      18.46,
+      77.4,
+      12
+    ],
+    "radius": {
+      "major": "3396190",
+      "minor": "3396190"
+    },
+    "mapscale": ""
+  },
+  "look": {
+    "pagename": "Jezero \u00b7 PlanDev rover demo",
+    "missionname": "Jezero-PlanDev"
+  },
+  "time": {
+    "enabled": false
+  },
+  "layers": [
+    {
+      "name": "Basemap",
+      "type": "header",
+      "uuid": "5b0e8c11-2a8e-4c53-8a2f-9d1e6a0c0001",
+      "expanded": true,
+      "sublayers": [
+        {
+          "name": "Jezero CTX orthomosaic (USGS, 6 m)",
+          "uuid": "5b0e8c11-2a8e-4c53-8a2f-9d1e6a0c0003",
+          "type": "tile",
+          "visibility": true,
+          "sourceType": "url",
+          "url": "Layers/CTX/{z}/{x}/{y}.png",
+          "tileformat": "tms",
+          "initialOpacity": 1,
+          "minZoom": 7,
+          "maxNativeZoom": 14,
+          "maxZoom": 17,
+          "description": "USGS Astrogeology Mars 2020 TRN CTX orthomosaic of Jezero crater, 6 m/px, cut into tiles by examples/11-rover/data/build-jezero-data.sh. Planetocentric, east-positive longitude."
+        },
+        {
+          "name": "Viking MDIM 2.1 color mosaic",
+          "uuid": "5b0e8c11-2a8e-4c53-8a2f-9d1e6a0c0002",
+          "type": "tile",
+          "visibility": true,
+          "sourceType": "url",
+          "url": "https://s3-eu-west-1.amazonaws.com/whereonmars.cartodb.net/viking_mdim21_global/{z}/{x}/{y}.png",
+          "tileformat": "tms",
+          "initialOpacity": 1,
+          "minZoom": 0,
+          "maxNativeZoom": 7,
+          "maxZoom": 17,
+          "description": "USGS Viking MDIM 2.1 global color mosaic (OpenPlanetary/whereonmars XYZ tiles). Planetocentric, east-positive longitude."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Draw",
+      "icon": "pencil",
+      "js": "DrawTool",
+      "variables": {
+        "intents": [
+          "ROI",
+          "Campaign",
+          "Traverse",
+          "Waypoint",
+          "Annotation",
+          "All Features"
+        ],
+        "defaultDrawClipping": "off",
+        "defaultPublicFilter": false,
+        "defaultYoursOnlyFilter": true,
+        "defaultOnFilter": false,
+        "leadsCanEditFileInfo": false,
+        "hoverLengthOnLines": false
+      }
+    },
+    {
+      "name": "PlanDev",
+      "icon": "calendar-clock",
+      "js": "PlanDevTool",
+      "variables": {
+        "mission": "rover",
+        "embedOrigins": [
+          "http://localhost:3111"
+        ]
+      }
+    }
+  ]
+}

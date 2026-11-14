@@ -1,0 +1,25 @@
+dependencies {
+  implementation project(':libraries:power')
+  implementation project(':libraries:data')
+}
+
+// Include library sources so the PlanDev annotation processor can generate value mappers
+// for @AutoValueMapper.Record types defined in the libraries
+sourceSets {
+  main {
+    java {
+      srcDir project(':libraries:power').file('src/main/java')
+      srcDir project(':libraries:data').file('src/main/java')
+    }
+  }
+}
+
+// Fat JAR for uploading to PlanDev
+jar {
+  dependsOn configurations.runtimeClasspath
+  from {
+    configurations.runtimeClasspath.filter { it.exists() }.collect { it.isDirectory() ? it : zipTree(it) }
+  }
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  archiveFileName.set("rover.jar")
+}

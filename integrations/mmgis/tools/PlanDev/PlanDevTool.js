@@ -18,6 +18,7 @@ import Map_ from '@basics/Map_/Map_'
 import { Button, IconButton } from '@design/components'
 
 import { embedded, initEmbed, openPlanInPlanDev, showSimulationInPlanDev } from './PlanDevEmbed'
+import { setGridOverlay } from './PlanDevMap'
 import './PlanDevTool.css'
 
 initEmbed()
@@ -126,7 +127,7 @@ function showLayer(plan, colorIndex) {
 
 function fitLayer(uuid, n = 10) {
     const b = L_.layers.layer[uuid]?.getBounds?.()
-    if (b?.isValid()) Map_.map.fitBounds(b, { padding: [40, 40], maxZoom: 9 })
+    if (b?.isValid()) Map_.map.fitBounds(b, { padding: [40, 40], maxZoom: 13 })
     else if (n > 0) setTimeout(() => fitLayer(uuid, n - 1), 300)
 }
 
@@ -649,6 +650,12 @@ function PlanDevPanel() {
                             <div key={n.text} className={n.warn ? 'plandevTool_warn' : 'plandevTool_muted'}>
                                 {n.text}
                             </div>
+                        ))}
+                        {(active.overlays || []).map((o) => (
+                            <label key={o.id} className='plandevTool_muted' title={o.source}>
+                                <input type='checkbox' onChange={(e) => setGridOverlay(o, e.target.checked).catch((err) => setError(err.message))} /> Show {o.name} ({o.datasetId}
+                                {o.usedByPlan ? ', the data this route was planned on' : ''})
+                            </label>
                         ))}
                         <h4>Activities (simulated)</h4>
                         <Table table={active.table} onRow={zoomTo} />

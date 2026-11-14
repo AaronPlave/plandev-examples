@@ -15,10 +15,12 @@ const { intervalToSec, checkParams, normalizeTargets } = require('./util')
 
 const PROFILE_CACHE_MAX = 200 // ponytail: FIFO by (dataset, resource); a real LRU if many datasets are browsed
 
-// How each kind of geometry is drawn, so modeled states read differently from assumed paths,
-// user inputs and analysis constructions. Adapters say which one a feature is (properties.basis).
+// How each kind of geometry is drawn, so modeled states read differently from planned geometry, assumed
+// paths, user inputs and analysis constructions. Adapters say which one a feature is (properties.basis).
 const STYLE_BY_BASIS = {
     simulated: null, // the layer's own solid style
+    planned: { weight: 9, opacity: 0.3, fillOpacity: 0.15 }, // a wide, faint band: where the plan says to go
+    violation: { color: '#ff1744', fillColor: '#ff1744', weight: 5, opacity: 0.95 },
     illustrative: { dashArray: '8 6' },
     input: { color: '#ffffff', fillColor: '#ffffff', weight: 2, dashArray: '2 5', fillOpacity: 0.1 },
     analysis: { color: '#ffea00', fillColor: '#ffea00', weight: 2, dashArray: '4 4', fillOpacity: 0.15 },
@@ -436,12 +438,16 @@ function createCandidates(pd, missions) {
             inputsCurrent,
             history: await history(p),
             features: [],
+            overlays: [],
             position: null,
             table: null,
             notes: [],
             summary: [],
             constraints: null,
         }
+        // A plan's planned geometry needs no simulation: an adapter that can read it from the plan's
+        // directives alone says so, and is then also asked when there is no successful dataset.
+        if (dataset?.status !== 'success' && a.interpretsPlanOnly) Object.assign(out, await a.interpret({ ...ctx, dataset: null }))
         if (dataset?.status === 'success') {
             Object.assign(out, await a.interpret(ctx))
             if (stale)
@@ -469,8 +475,31 @@ function createCandidates(pd, missions) {
             }
             out.summary = metrics
             out.constraints = await constraints(p.id, dataset.id, ctx.startMs).catch((e) => [{ name: 'constraint check', success: false, windows: [], errors: [e.message] }])
+            out.features.push(...violationFeatures(out.constraints, out.position))
         }
         out.features = tag(out.features, p, dataset)
+        return out
+    }
+
+    /**
+     * Where each constraint violation happened: the simulated positions held during its windows. Needs
+     * only constraint results and a position track, so it is the same for every mission.
+     */
+    function violationFeatures(constraints, position) {
+        const out = []
+        const samples = position?.samples || []
+        for (const c of constraints || []) {
+            for (const w of c.windows) {
+                const before = samples.findLast(([t]) => t <= w.startMs)
+                const pts = [...(before ? [before] : []), ...samples.filter(([t]) => t > w.startMs && t <= w.endMs)].map(([, lon, lat]) => [lon, lat])
+                if (!pts.length) continue
+                out.push({
+                    type: 'Feature',
+                    properties: { kind: 'violation', basis: 'violation', name: `${c.name} violated`, constraint: c.name, startMs: w.startMs, endMs: w.endMs },
+                    geometry: pts.length > 1 ? { type: 'LineString', coordinates: pts } : { type: 'Point', coordinates: pts[0] },
+                })
+            }
+        }
         return out
     }
 
@@ -506,6 +535,12 @@ function createCandidates(pd, missions) {
         evaluate,
         plan,
         missions,
+        /** A data product the adapter serves to the map (e.g. the terrain grid its mission plans on). */
+        data: async (key, name) => {
+            const fn = byKey(key).adapter.data?.[name]
+            if (!fn) throw new Error(`the ${key} adapter has no data product ${name}`)
+            return fn()
+        },
         config: async (key) => {
             const m = byKey(key)
             const a = m.adapter

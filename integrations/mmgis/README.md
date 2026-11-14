@@ -12,10 +12,11 @@ Candidates are ordinary PlanDev plans, linked by `parent_id`. The tool runs in t
 - **Standalone:** plans are chosen in the tool.
 - **Embedded:** MMGIS runs in a PlanDev plan's *External Application* panel, kept in step with the timeline's time cursor, activity selection and the plan or simulation dataset on screen.
 
-The same code drives two missions:
+The same code drives three missions:
 
 - **`mro`**: radar observations of Mars targets (`examples/05-orbiter`).
 - **`hopper`**: a lunar hop-and-image traverse (`examples/04-hopper`).
+- **`rover`**: a Jezero crater traverse planned over real terrain slope (`examples/11-rover`). Its plans are made in PlanDev, not from the map; embedded MMGIS shows them as soon as they are opened.
 
 ```
 MMGIS Draw ──GeoJSON──▶ PlanDev tool ──/api/plandev──▶ backend plugin (MMGIS server, holds PlanDev credentials)
@@ -48,12 +49,14 @@ PlanDev plan page ── postMessage plandev.embed.v1 (ids + time only) ──�
 | Member | Used for |
 |---|---|
 | `key`, `label`, `help`, `conventions` | Identity, and the body/frame/coordinate/time conventions recorded in each view's provenance. |
-| `targets: {types, max, ordered}` | Validating the targets the browser sends. |
+| `targets: {types, max, ordered, keep?, roles?, priority?}` | Validating the targets the browser sends. `keep` names the feature properties passed through (the rover's `priority`). `roles` and `priority` label the embedded editor's tools. |
 | `params: [{key, label, unit, type, min, max, options, default}]` | Validating parameters and rendering the form. |
 | `goals: [{name, arguments(targets, params)}]` / `inputsFromGoalArguments({name: args})` | The scheduling goals (by PlanDev goal name) that take the map's inputs, and converting to and from their spec-goal arguments. The plan's scheduling specification decides their order and simulate-after settings; other goals in it run untouched. |
-| `interpret(ctx)` → `{features, position, table, notes}` | Map features, position track, per-activity table and notes for one simulation dataset. |
-| `metrics(ctx)` → `[{key, name, value, unit, digits}]` | Summary metrics. The generic code also computes them on the plan this one was derived from (`parent_id`), and adds that value to each metric as `base`. |
-| `evaluation: {help, targets, params}` + `evaluate(ctx, targets, params)` → `{features, table, summary, notes}` | *Optional.* A read-only spatial question about one plan's simulation (hopper only). |
+| `interpret(ctx)` → `{features, position, overlays?, table, notes}` | Map features, position track, per-activity table and notes for one simulation dataset. A position sample is `[ms, lon, lat, capDeg?]`, where `capDeg` is an optional circle that moves with the entity (MRO: where it is in view). `overlays: [{id, name, datasetId, url, usedByPlan, usedBySimulation, source}]` are gridded data products the map can draw. |
+| `interpretsPlanOnly` | *Optional.* `interpret` can draw a plan from its directives alone (`ctx.dataset` is null), so an unsimulated plan still shows its planned geometry (rover). |
+| `data: {name: async () => grid}` | *Optional.* Data products served at `missions/:key/data/:name`, such as the rover's terrain. |
+| `metrics(ctx)` → `[{key, name, value, unit, digits, headline?, better?}]` | Summary metrics. The generic code also computes them on the plan this one was derived from (`parent_id`), and adds that value to each metric as `base`. The embedded card leads with `headline` metrics. `better` (`low` or `high`) colours a difference as an improvement or not. |
+| `evaluation: {help, targets, params}` + `evaluate(ctx, targets, params)` → `{features, table, summary, notes}` | *Optional.* A read-only spatial question about one plan's simulation (hopper, rover). |
 
 `ctx` holds:
 
@@ -70,7 +73,11 @@ Feature properties that the generic map code relies on:
 - `spanId`, `directiveId`, `startMs`, `endMs`, `name`.
 - `primary`: the feature that stands for its activity, used when selecting.
 - `context`: geometry left out when fitting the map.
-- `basis`: `simulated` (a modelled state), `illustrative` (an assumed path), `input` or `analysis`. The generic layer turns this into a per-feature style: solid, dashed, white dotted and yellow dashed respectively.
+- `basis`: `simulated` (a modelled state), `planned` (geometry a plan's activities carry, e.g. route waypoints), `illustrative` (an assumed path or area), `input`, `analysis` or `violation`. The generic layer turns this into a per-feature style: solid; a wide faint band; dashed; white dotted; yellow dashed; red.
+- `details: [[label, value]]`: shown when the feature is selected in the embedded card.
+- `label`: a permanent map label.
+
+The generic layer also adds a `violation` feature per constraint window: the simulated positions held during it.
 
 The generic layer adds `fid`, `planId` and `simulationDatasetId` to every feature.
 
@@ -115,20 +122,29 @@ The panel accepts four requests, and only from that iframe at that origin: `read
 
 On the MMGIS side the bridge runs only when MMGIS is framed by an origin listed in the PlanDev tool's `embedOrigins` variable. MMGIS's `FRAME_ANCESTORS` must allow that origin too.
 
-What MMGIS shows:
+What MMGIS shows, with no tool panel opened:
 
-- **Position:** the latest simulated sample at or before the cursor. It is not interpolated.
-  - MRO: 30 s `subSCBodies_MARS_*` samples, with a ±45 min sampled-track window.
+- **The map and one card.** MMGIS's own interface (top bar, toolbar, coordinates, tool panel) is hidden while embedded; *Map tools* on the card brings it back. The card shows:
+  - the plan, and whether it is an alternative;
+  - where each tracked entity is at the cursor, with *follow*;
+  - the selected feature's details and any constraint window it overlaps;
+  - the headline metrics, with differences from a compared plan;
+  - constraint violations (click one to move the cursor there);
+  - the mission's data overlays (rover: the terrain grid, with legend and a value under the pointer);
+  - *Compare with* (default: the plan it was derived from), whose route is drawn in orange;
+  - *Try a change…* (below).
+- **Time:** features dim until they start. The position is the latest simulated sample at or before the cursor, not interpolated:
+  - MRO: 30 s `subSCBodies_MARS_*` samples, with a ±45 min sampled-track window and the in-view circle.
   - Hopper: `hopper.latitude/longitude`, which change when a hop lands.
-- **Timeline → map:** a selection in the timeline selects the activity's `primary` feature in MMGIS.
+  - Rover: `rover.latitude/longitude`, which change at each waypoint.
+- **A second plan's entities:** add `plandevAlso=<plan id>` to the iframe URL, for example a rover plan with the MRO plan. The plan must be on the same body.
+- **Timeline → map:** a selection in the timeline selects the activity's `primary` feature.
 - **Map → timeline:** clicking a feature selects its span or directive in PlanDev and moves the cursor to the activity's start. Clicking near a shown position sample moves the cursor to that sample.
-- **Plan or dataset change:** the features reload. The map fits once per plan. A dataset or revision change keeps the user's view, and so does a view pinned with MMGIS `mapLat`/`mapLon`/`mapZoom` in the iframe URL.
-- **The pill on the map** shows:
-  - the plan and the plan it was derived from;
-  - the plan's revision;
-  - the simulation dataset, its status, and whether it is stale.
-
-  Features carry `simulationDatasetId`, and map clicks on a stale dataset's features are ignored. The position marker pans the map only when *follow position* is on.
+- **Plan or dataset change:** the features reload. The map fits once per plan; it never recentres while you explore unless *follow* is on.
+- **Try a change…** edits the open plan's goal inputs on the map: drag sites, add sites or regions to avoid, set priorities and the goal parameters.
+  - *Check current plan* is read-only (the adapter's `evaluate`).
+  - *Plan alternative* branches the plan (`explore`), and PlanDev opens the branch. On a branch, *Re-plan* updates it in place.
+  - When the run's simulation is ready, the card asks PlanDev to show it (`showSimulation`). *Keep as plan* ends the exploration.
 
 ## Data conventions
 
@@ -182,6 +198,9 @@ The steps below are what this prototype was verified with. Ports belong to the `
    ./gradlew :examples:05-orbiter:scheduling:buildSchedulingProcedureJar_ScheduleTargetObservations \
              :examples:04-hopper:scheduling:buildSchedulingProcedureJar_ScheduleHopTraverse \
              :examples:04-hopper:constraints:buildAllConstraintProcedureJars
+   # rover (see examples/11-rover/README.md); its plans also use the hopper's MinBatterySOC and OnboardStorageFull jars
+   ./gradlew :examples:11-rover:build :examples:11-rover:scheduling:compileJava :examples:11-rover:constraints:compileJava
+   ./gradlew :examples:11-rover:scheduling:buildSchedulingProcedureJar_ScheduleTraverse :examples:11-rover:constraints:buildAllConstraintProcedureJars
    ```
 2. **PlanDev v4.5.0** with the kernels mounted. Pass `-f deploy/plandev-spice.override.yml` on top of plandev's `docker-compose.yml`, with `SPICE_KERNELS_PATH=<abs path>/spice-kernels`. With `pd`:
    ```bash
@@ -198,7 +217,7 @@ The steps below are what this prototype was verified with. Ports belong to the `
 3. **Seed PlanDev** (uploading a model needs `aerie_admin`; nothing else does):
    ```bash
    PLANDEV_ROLE=aerie_admin PLANDEV_GATEWAY_URL=http://localhost:31021 PLANDEV_HASURA_URL=http://localhost:31020 \
-   PLANDEV_USERNAME=mmgis-planner PLANDEV_PASSWORD=… node integrations/mmgis/scripts/setup-plandev.js   # [mro] [hopper]
+   PLANDEV_USERNAME=mmgis-planner PLANDEV_PASSWORD=… node integrations/mmgis/scripts/setup-plandev.js   # [mro] [hopper] [rover]
    ```
    The script prints `PLANDEV_<MISSION>_BASE_PLAN_ID`; goals are found by name. The base plan identifies the mission model and is the default plan to show; any plan of that model can be used. Setup is idempotent by name. To upload a rebuilt goal jar as a new goal version, run it with `UPDATE_GOALS=1`.
 4. **MMGIS** (≥ 5.5, Node 22) with PostGIS. Also apply the `mmgisAPI.addLayer` fix (branch `fix/mmgisapi-addlayer-resetconfig`).
@@ -217,14 +236,15 @@ The steps below are what this prototype was verified with. Ports belong to the `
    PLANDEV_PASSWORD=…
    PLANDEV_MRO_BASE_PLAN_ID=…
    PLANDEV_HOPPER_BASE_PLAN_ID=…
+   PLANDEV_ROVER_BASE_PLAN_ID=…     # optional: PLANDEV_ROVER_DATA_DIR if the plugin is installed away from this repo (default: examples/11-rover resources)
    PLANDEV_UI_URL=http://localhost:3111
    ```
-5. **Missions:** `MMGIS_ADMIN=admin MMGIS_ADMIN_PASSWORD='…' MMGIS_SETUP_CODE=… node integrations/mmgis/scripts/setup-mmgis.js`. The PlanDev tool's `embedOrigins` in `mission/*.config.json` must list the PlanDev UI origin.
-6. **Standalone:** open `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`) and sign in. In the **PlanDev** tool, choose a plan, then:
+5. **Missions:** for the Jezero basemap, cut the USGS CTX orthomosaic into tiles first: `examples/11-rover/data/build-jezero-data.sh <MMGIS>/Missions/Jezero-PlanDev/Layers/CTX`. Then run `MMGIS_ADMIN=admin MMGIS_ADMIN_PASSWORD='…' MMGIS_SETUP_CODE=… node integrations/mmgis/scripts/setup-mmgis.js`. The PlanDev tool's `embedOrigins` in `mission/*.config.json` must list the PlanDev UI origin.
+6. **Standalone:** open `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`, `Jezero-PlanDev`) and sign in. In the **PlanDev** tool, choose a plan, then:
    1. **Explore:** click *Copy … goal inputs to a new Draw file*. Move, add or delete points in that file with the **Draw** tool, then reload the file in the PlanDev tool. Tick the inputs, set the parameters, and click **Explore alternative from #N**. On the working branch, change inputs and click **Update exploration #N** as often as needed; **Keep #N as plan** ends it, and **Explore another** starts a second branch. Embedded, PlanDev opens the new branch and switches to each new simulation.
    2. **Evaluate:** pick a Draw file with points or polygons, tick them, and click **Evaluate**.
    3. **Compare:** tick plans to compare them, and use the eye icons to overlay their routes.
-7. **Embedded:** in a PlanDev plan, set a grid panel to *External Application* with `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`), then save the view.
+7. **Embedded:** in a PlanDev plan, set a grid panel to *External Application* with `http://localhost:8889/?mission=Mars-PlanDev` (or `Moon-PlanDev`, `Jezero-PlanDev`), then save the view. `mission/Jezero-PlanDev.view.json` is such a view for the rover.
    1. Sign in to MMGIS once in the same browser.
    2. Click the timeline's time-cursor lane (under the time axis) to place the cursor, and drag it to scrub.
    3. Select activities in the timeline or tables, or click features on the map.
@@ -238,6 +258,7 @@ Tests:
 - `node --test integrations/mmgis/test/*.test.js`
 - `./gradlew :examples:05-orbiter:scheduling:test`: the MRO pass search against the real kernels.
 - `./gradlew :examples:04-hopper:scheduling:test`: route ordering and `HopModel`.
+- `./gradlew :examples:11-rover:scheduling:test`: routing over terrain, slope limit, avoid regions, recharge splits, deadline trade-offs, and the shipped grid separating the objectives.
 
 ## Prototype limits
 

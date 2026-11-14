@@ -80,9 +80,10 @@ function extremaOver(segments, from, to) {
 
 /**
  * Validate browser-supplied targets at the trust boundary; returns a clean FeatureCollection.
- * Feature order is preserved (a mission may treat it as meaningful).
+ * Feature order is preserved (a mission may treat it as meaningful). `keep` names the feature
+ * properties a mission reads (numbers, or strings up to 120 characters); all others are dropped.
  */
-function normalizeTargets(fc, { max = 20, types = ['Point', 'Polygon'] } = {}) {
+function normalizeTargets(fc, { max = 20, types = ['Point', 'Polygon'], keep = [] } = {}) {
     const features = fc && fc.type === 'FeatureCollection' ? fc.features : null
     if (!Array.isArray(features) || features.length === 0) throw new Error('targets must be a non-empty FeatureCollection')
     if (features.length > max) throw new Error(`at most ${max} targets`)
@@ -100,10 +101,16 @@ function normalizeTargets(fc, { max = 20, types = ['Point', 'Polygon'] } = {}) {
             const id = String(f.id ?? f.properties?.id ?? i).replace(/[^\w:.\-]/g, '_').slice(0, 80)
             if (ids.has(id)) throw new Error(`duplicate target id ${id}`)
             ids.add(id)
+            const kept = {}
+            for (const k of keep) {
+                const v = f.properties?.[k]
+                if (Number.isFinite(v)) kept[k] = v
+                else if (typeof v === 'string') kept[k] = v.slice(0, 120)
+            }
             return {
                 type: 'Feature',
                 id,
-                properties: { id, name: String(f.properties?.name ?? id).slice(0, 120), source: f.properties?.source ?? null },
+                properties: { ...kept, id, name: String(f.properties?.name ?? id).slice(0, 120), source: f.properties?.source ?? null },
                 geometry: { type: g.type, coordinates: g.coordinates },
             }
         }),
@@ -143,6 +150,29 @@ function segmentHitsRing(a, b, ring) {
     return false
 }
 
+/** Distance in km from point p to segment a–b ([lon, lat] degrees), on a local flat projection about p. */
+function pointToSegmentKm(p, a, b, radiusKm) {
+    const k = (Math.PI / 180) * radiusKm
+    const cos = Math.cos((p[1] * Math.PI) / 180)
+    const ax = (a[0] - p[0]) * k * cos, ay = (a[1] - p[1]) * k
+    const bx = (b[0] - p[0]) * k * cos, by = (b[1] - p[1]) * k
+    const dx = bx - ax, dy = by - ay
+    const len2 = dx * dx + dy * dy
+    const t = len2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0
+    return Math.hypot(ax + t * dx, ay + t * dy)
+}
+
+/** Integral of a piecewise-constant (discrete, numeric) profile over [from, to], in value·seconds. */
+function integrateStep(segments, from, to) {
+    let sum = 0
+    for (let i = 0; i < segments.length; i++) {
+        const a = Math.max(from, segments[i].t)
+        const b = Math.min(to, i + 1 < segments.length ? segments[i + 1].t : to)
+        if (b > a && typeof segments[i].dynamics === 'number') sum += segments[i].dynamics * (b - a)
+    }
+    return sum
+}
+
 /** Validate a numeric parameter against an adapter's param spec. */
 function checkParams(spec, input) {
     const out = {}
@@ -173,4 +203,6 @@ module.exports = {
     checkParams,
     pointInRing,
     segmentHitsRing,
+    pointToSegmentKm,
+    integrateStep,
 }

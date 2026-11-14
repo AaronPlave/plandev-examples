@@ -4,7 +4,7 @@
 // Idempotent by name. UPDATE_GOALS=1 uploads the goal jars again as new goal versions.
 //
 //   PLANDEV_ROLE=aerie_admin PLANDEV_GATEWAY_URL=http://localhost:9000 PLANDEV_HASURA_URL=http://localhost:8080 \
-//   PLANDEV_USERNAME=mmgis-planner PLANDEV_PASSWORD=... node scripts/setup-plandev.js [mro|hopper ...]
+//   PLANDEV_USERNAME=mmgis-planner PLANDEV_PASSWORD=... node scripts/setup-plandev.js [mro|hopper|rover ...]
 'use strict'
 const fs = require('fs')
 const path = require('path')
@@ -93,6 +93,38 @@ const MISSIONS = {
             },
         ],
     },
+}
+
+// Built the way a PlanDev user would, with nothing from MMGIS: the traverse goal in the scheduling
+// specification with the mission's own site catalog (sites left blank), and a hand-placed relay pass.
+const roverPlan = (name, objective, startTime = '2027-02-01T00:00:00Z') => ({
+    name,
+    startTime,
+    duration: '96:00:00',
+    activities: [{ name: 'Relay pass', type: 'Downlink', start_offset: '36:00:00', arguments: { duration: 900e6 } }],
+    goals: [{ name: 'ScheduleTraverse', arguments: { objective } }],
+})
+MISSIONS.rover = {
+    model: { name: 'rover-mmgis', mission: 'Rover', jar: `${EX}/11-rover/build/libs/rover.jar` },
+    goals: [
+        {
+            name: 'ScheduleTraverse',
+            jar: `${EX}/11-rover/scheduling/build/libs/ScheduleTraverse.jar`,
+            description: 'Rover: route a traverse of science sites over the mission terrain grid (slope from the USGS Jezero CTX DTM) and create its Drive and Observe activities. Drive speed and energy are illustrative (see DriveModel).',
+        },
+    ],
+    // The battery and storage constraints are the hopper's jars: they name only resources both models have.
+    constraints: [
+        { name: 'MinBatterySOC (rover)', jar: `${EX}/04-hopper/constraints/build/libs/MinBatterySOC.jar`, arguments: { minSOC: 25 } },
+        { name: 'OnboardStorageFull (rover)', jar: `${EX}/04-hopper/constraints/build/libs/OnboardStorageFull.jar`, arguments: { fractionFull: 0.99 } },
+        { name: 'DriveSlopeLimit (rover)', jar: `${EX}/11-rover/constraints/build/libs/DriveSlopeLimit.jar`, arguments: { maxSlopeDeg: 15 } },
+    ],
+    plans: [
+        roverPlan('Jezero traverse (least energy)', 'MIN_ENERGY'),
+        roverPlan('Jezero traverse (shortest distance)', 'MIN_DISTANCE'),
+        // Same days as the MRO base plan, so the two plans' vehicles can be shown on one map and time cursor.
+        roverPlan('Jezero traverse (alongside the MRO plan)', 'MIN_ENERGY', '2024-01-02T00:00:00Z'),
+    ],
 }
 
 async function upsertModel(pd, m) {

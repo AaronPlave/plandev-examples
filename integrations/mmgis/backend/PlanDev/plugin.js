@@ -10,7 +10,7 @@ const { createCandidates } = require('../../lib/candidates')
 
 // Mission adapters, enabled by setting a plan of their mission model (the default plan). Their goals are
 // found in PlanDev by name (adapter.goals).
-const ADAPTERS = { mro: require('../../missions/mro'), hopper: require('../../missions/hopper') }
+const ADAPTERS = { mro: require('../../missions/mro'), hopper: require('../../missions/hopper'), rover: require('../../missions/rover') }
 
 let candidates = null
 function workflow() {
@@ -56,6 +56,8 @@ function makeRouter(s) {
     router.get('/missions/:key/config', canPlan, send((req) => workflow().config(req.params.key)))
     // Every plan of the mission's model (with parent_id lineage): any of them can be inspected, evaluated or revised.
     router.get('/missions/:key/plans', canPlan, send((req) => workflow().plans(req.params.key)))
+    // A data product of the mission (the rover's terrain grid), for the map to draw.
+    router.get('/missions/:key/data/:name', canPlan, send((req) => workflow().data(req.params.key, req.params.name)))
 
     // Working branches. expectedRevision is the revision the user was looking at: a plan that changed
     // since is refused rather than changed from stale context.
@@ -110,6 +112,8 @@ module.exports = {
         { name: 'PLANDEV_PASSWORD', required: true, private: true },
         { name: 'PLANDEV_MRO_BASE_PLAN_ID', required: false },
         { name: 'PLANDEV_HOPPER_BASE_PLAN_ID', required: false },
+        { name: 'PLANDEV_ROVER_BASE_PLAN_ID', required: false },
+        { name: 'PLANDEV_ROVER_DATA_DIR', required: false },
         { name: 'PLANDEV_UI_URL', required: false },
     ],
     onceInit: (s) => {
