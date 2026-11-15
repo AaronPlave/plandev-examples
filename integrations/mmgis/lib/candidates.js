@@ -34,7 +34,7 @@ function createCandidates(pd, missions) {
     // missions: [{ adapter, basePlanId }]; the base plan identifies the mission model and is the default
     // plan to show; any plan of that model can be inspected, evaluated or explored. adapter.goals names the
     // scheduling goals that take the map's inputs.
-    const inflight = new Map() // planId → promise (only to avoid double-driving in this process)
+    const inflight = new Map() // planId → { promise, phase: 'scheduling' | 'simulating' } (only to avoid double-driving in this process)
     const runErrors = new Map() // planId → message, for failures before PlanDev records a request
     const profileCache = new Map()
 
@@ -150,13 +150,14 @@ function createCandidates(pd, missions) {
     function run(planId) {
         if (inflight.has(planId)) throw new Error(`plan ${planId} is already being scheduled and simulated`)
         runErrors.delete(planId)
-        const r = scheduleAndSimulate(planId)
+        const state = { phase: 'scheduling' }
+        state.promise = scheduleAndSimulate(planId, (phase) => (state.phase = phase))
             .catch((e) => {
                 runErrors.set(planId, e.message)
                 console.error(`[plandev] plan ${planId}: ${e.message}`)
             })
             .finally(() => inflight.delete(planId))
-        inflight.set(planId, r)
+        inflight.set(planId, state)
     }
 
     // ---------- exploration: working branches are ordinary PlanDev plans ----------
@@ -212,7 +213,7 @@ function createCandidates(pd, missions) {
         return { planId }
     }
 
-    async function scheduleAndSimulate(planId) {
+    async function scheduleAndSimulate(planId, onPhase = () => {}) {
         // The scheduler rejects a spec whose plan_revision is stale; the PlanDev UI stamps it the same way.
         const { revision, scheduling_specification: spec } = await plan(planId)
         await pd.gql(`mutation($id:Int!,$r:Int!){ update_scheduling_specification_by_pk(pk_columns:{id:$id}, _set:{plan_revision:$r, analysis_only:false}){ id } }`, {
@@ -225,7 +226,8 @@ function createCandidates(pd, missions) {
             async () => (await pd.gql(`query($a:Int!){ scheduling_request(where:{analysis_id:{_eq:$a}}){ status reason } }`, { a: analysisId })).scheduling_request[0],
             (r) => r && ['success', 'failed'].includes(r.status),
         )
-        if (req.status !== 'success') return
+        if (req.status !== 'success') throw new Error(`scheduling failed${req.reason ? `: ${JSON.stringify(req.reason).slice(0, 300)}` : ''}`)
+        onPhase('simulating')
         const sim = await pd.gql(`query($p:Int!){ simulate(planId:$p, force:true){ simulationDatasetId status reason } }`, { p: planId })
         if (sim.simulate.status === 'failed') throw new Error(`simulate: ${JSON.stringify(sim.simulate.reason).slice(0, 300)}`)
         await waitFor(
@@ -250,6 +252,8 @@ function createCandidates(pd, missions) {
                 ...p,
                 exploring: isExploring({ tags }),
                 running: inflight.has(p.id),
+                phase: inflight.get(p.id)?.phase ?? null,
+                error: runErrors.get(p.id) ?? null,
                 latest: ds && { simulationDatasetId: ds.id, status: ds.status, planRevision: ds.plan_revision, stale: ds.plan_revision !== p.revision },
             }
         })
@@ -477,6 +481,9 @@ function createCandidates(pd, missions) {
             out.constraints = await constraints(p.id, dataset.id, ctx.startMs).catch((e) => [{ name: 'constraint check', success: false, windows: [], errors: [e.message] }])
             out.features.push(...violationFeatures(out.constraints, out.position))
         }
+        // The time a position track is valid over: the simulated plan, not "any time after its last sample".
+        const endMs = ctx.startMs + ctx.durationSec * 1000
+        for (const e of out.positions ?? (out.position ? [out.position] : [])) e.coverage ??= { startMs: e.samples[0]?.[0] ?? ctx.startMs, endMs }
         out.features = tag(out.features, p, dataset)
         return out
     }

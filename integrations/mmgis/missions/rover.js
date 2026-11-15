@@ -90,7 +90,23 @@ function lowest(segments, durationSec) {
     return best
 }
 
+/**
+ * What became of one science site, from what the plan and its simulation show (no inference from a route
+ * merely passing near it). state: observed | reached | missed | unscheduled | planned | unknown.
+ */
+function siteOutcome({ requested, scheduled, simulated, reached, observed, offKm, driveStopped }) {
+    if (!scheduled) return requested
+        ? { state: 'unscheduled', label: 'Requested, not scheduled', reason: 'the goal did not schedule it' }
+        : { state: 'unknown', label: 'Catalog site, not in the plan', reason: 'the goal inputs behind this simulation are not known, so whether it was requested is unknown' }
+    if (!simulated) return { state: 'planned', label: 'Scheduled, not simulated' }
+    if (observed) return { state: 'observed', label: 'Observed' }
+    const reason = driveStopped ?? (offKm != null ? `observed ${offKm.toFixed(2)} km short of the site` : null)
+    if (reached) return { state: 'reached', label: 'Reached, not observed', reason }
+    return { state: 'missed', label: 'Scheduled, not reached', reason }
+}
+
 module.exports = {
+    siteOutcome,
     key: 'rover',
     label: 'Rover traverse (Jezero crater, Mars)',
     help: 'Goal ScheduleTraverse routes the rover between science sites over the mission’s terrain slope grid, choosing the visiting order that collects the most site priority before the plan ends, and stops to recharge to keep the battery above the reserve. Drive speed and energy as a function of slope are illustrative, and shared with the simulation.',
@@ -170,6 +186,7 @@ module.exports = {
         const notes = []
         const observed = new Map() // siteId → true if observed on site, false if observed elsewhere
         const plannedOn = new Set()
+        const stoppedFor = new Map() // siteId → why the drive heading for it stopped short
 
         for (const s of acts.filter((a) => a.type === 'Drive')) {
             const wp = s.arguments.waypoints || []
@@ -193,7 +210,10 @@ module.exports = {
                 )
                 if (stopped) details.push(['Simulation', stopped])
                 rows.push({ spanId: s.spanId, directiveId: s.directiveId, to, start: iso(s.startSec), distanceKm: simKm, durationH: (s.endSec - s.startSec) / 3600, energyWh: wh, socAfter: valueAt(pr[R.soc], s.endSec), maxSlope })
-                if (stopped) notes.push({ warn: true, text: `Drive to ${to} ${stopped}; it covered ${simKm.toFixed(2)} of ${plannedKm.toFixed(2)} km planned.` })
+                if (stopped) {
+                    notes.push({ warn: true, text: `Drive to ${to} ${stopped}; it covered ${simKm.toFixed(2)} of ${plannedKm.toFixed(2)} km planned.` })
+                    stoppedFor.set(to, `the drive heading for it ${stopped} (${simKm.toFixed(2)} of ${plannedKm.toFixed(2)} km)`)
+                }
             }
             const name = `Drive to ${to}`
             features.push({
@@ -210,13 +230,19 @@ module.exports = {
         }
 
         const sites = new Map() // siteId → {name, priority, lon, lat}: sites the plan's Observe activities name
+        const observations = new Map() // siteId → [{spanId, directiveId, startMs}]: the activities that observe it
+        const offBy = new Map() // siteId → km from the site where it was observed, if not on it
         for (const s of acts.filter((a) => a.type === 'Observe')) {
             const a = s.arguments
-            if (a.siteId) sites.set(a.siteId, { name: a.siteName || a.siteId, priority: a.priority ?? 1, lon: a.siteLongitude, lat: a.siteLatitude })
+            if (a.siteId) {
+                sites.set(a.siteId, { name: a.siteName || a.siteId, priority: a.priority ?? 1, lon: a.siteLongitude, lat: a.siteLatitude })
+                observations.set(a.siteId, [...(observations.get(a.siteId) || []), { spanId: s.spanId, directiveId: s.directiveId, startMs: ms(s.startSec) }])
+            }
             if (!pr) continue
             const [lon, lat] = at(s.startSec)
             const offKm = a.siteId ? greatCircleKm(a.siteLatitude, a.siteLongitude, lat, lon, RADIUS_KM) : 0
-            observed.set(a.siteId, offKm <= ON_SITE_KM)
+            observed.set(a.siteId, offKm <= ON_SITE_KM || observed.get(a.siteId) === true)
+            if (offKm > ON_SITE_KM) offBy.set(a.siteId, offKm)
             const gbit = ((valueAt(pr[R.received], s.endSec) ?? NaN) - (valueAt(pr[R.received], s.startSec) ?? NaN)) / 1e9
             features.push({
                 type: 'Feature',
@@ -236,16 +262,38 @@ module.exports = {
             if (offKm > ON_SITE_KM) notes.push({ warn: true, text: `${a.siteName || a.siteId} was observed ${offKm.toFixed(2)} km from the site: the rover had not arrived.` })
         }
 
-        // Sites: those the goal was given (or the mission catalog), plus any the plan's activities name.
+        // Sites: those the goal was given (or, when its inputs are not known, the mission catalog), plus any
+        // the plan's activities name. Each gets an outcome from what the plan and its simulation show.
+        const requested = new Set((given?.targets.features ?? []).filter((f) => f.geometry.type === 'Point').map((f) => f.id))
         const inputSites = (given?.targets.features ?? catalog().features).filter((f) => f.geometry.type === 'Point')
         for (const f of inputSites) if (!sites.has(f.id)) sites.set(f.id, { name: f.properties?.name ?? f.id, priority: f.properties?.priority ?? 1, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], unplanned: true })
         for (const [id, s] of sites) {
-            const state = s.unplanned ? 'not in the plan' : !pr ? 'planned' : observed.get(id) ? 'observed' : 'not reached in simulation'
+            const outcome = siteOutcome({
+                requested: given ? requested.has(id) : null,
+                scheduled: !s.unplanned,
+                simulated: !!pr,
+                reached: pr ? legs.some((l) => greatCircleKm(s.lat, s.lon, l.lat, l.lon, RADIUS_KM) <= ON_SITE_KM) : null,
+                observed: pr ? observed.get(id) === true : null,
+                offKm: offBy.get(id),
+                driveStopped: stoppedFor.get(id),
+            })
             features.unshift({
                 type: 'Feature',
-                properties: { kind: 'site', basis: 'input', targetId: id, name: `${s.name} — ${state}`, label: `${s.name} · P${s.priority}`, siteName: s.name, priority: s.priority, scheduled: !s.unplanned, observed: !!observed.get(id), details: [['Science priority', `${s.priority} of 3`], ['Status', state]] },
+                properties: {
+                    kind: 'site', basis: 'input', targetId: id, name: `${s.name} — ${outcome.label}`, label: `${s.name} · P${s.priority}`, siteName: s.name, priority: s.priority,
+                    scheduled: !s.unplanned, observed: !!observed.get(id), outcome, observations: observations.get(id) || [],
+                    details: [['Science priority', `${s.priority} of 3`], ['Outcome', outcome.label], ...(outcome.reason ? [['Why', outcome.reason]] : [])],
+                },
                 geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
             })
+        }
+        // Drives name their destination by site id; say the site's name where it is known.
+        const siteName = (id) => sites.get(id)?.name ?? id
+        for (const r of rows) r.to = siteName(r.to)
+        for (const f of features) if (f.properties.toSiteId) {
+            const n = siteName(f.properties.toSiteId)
+            f.properties.name = f.properties.name.replace(`Drive to ${f.properties.toSiteId}`, `Drive to ${n}`)
+            f.properties.details[0][1] = n
         }
         for (const f of (given?.targets.features ?? []).filter((x) => x.geometry.type === 'Polygon'))
             features.unshift({ type: 'Feature', properties: { kind: 'avoid', basis: 'input', targetId: f.id, name: `${f.properties?.name ?? 'Region'} — avoided by the route` }, geometry: f.geometry })
@@ -282,14 +330,14 @@ module.exports = {
         return {
             features,
             position,
-            overlays: [{ id: 'terrain', name: mine.name, datasetId: mine.id, url: 'api/plandev/missions/rover/data/terrain', usedByPlan: plannedOn.has(mine.id), usedBySimulation: simulatedOn === mine.id, source: mine.source }],
+            overlays: [{ id: 'terrain', name: mine.name, datasetId: mine.id, url: 'api/plandev/missions/rover/data/terrain', usedByPlan: plannedOn.has(mine.id), usedBySimulation: simulatedOn === mine.id, source: mine.source, resolution: '200 m cells' }],
             table: {
                 columns: [
                     { key: 'to', label: 'Drive to' },
-                    { key: 'start', label: 'Start (UTC)', type: 'time' },
-                    { key: 'distanceKm', label: 'Dist', unit: 'km', digits: 2 },
-                    { key: 'durationH', label: 'Time', unit: 'h', digits: 1 },
-                    { key: 'energyWh', label: 'Energy', unit: 'Wh', digits: 0 },
+                    { key: 'start', label: 'Start', type: 'time' },
+                    { key: 'distanceKm', label: 'Dist', unit: 'km', digits: 2, sum: true },
+                    { key: 'durationH', label: 'Time', unit: 'h', digits: 1, sum: true },
+                    { key: 'energyWh', label: 'Energy', unit: 'Wh', digits: 0, sum: true },
                     { key: 'socAfter', label: 'SOC after', unit: '%', digits: 0 },
                     { key: 'maxSlope', label: 'Max slope', unit: '°', digits: 1 },
                 ],

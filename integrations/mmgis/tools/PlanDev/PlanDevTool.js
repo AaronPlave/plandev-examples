@@ -18,10 +18,11 @@ import Map_ from '@basics/Map_/Map_'
 import { Button, IconButton } from '@design/components'
 
 import { embedded, initEmbed, openPlanInPlanDev, showSimulationInPlanDev } from './PlanDevEmbed'
+import { mountEmbedUI } from './PlanDevEmbedUI'
 import { setGridOverlay } from './PlanDevMap'
 import './PlanDevTool.css'
 
-initEmbed()
+initEmbed(mountEmbedUI)
 
 const root = () => (window.mmgisglobal.ROOT_PATH ? `${window.mmgisglobal.ROOT_PATH}/` : '')
 const COLORS = ['#00e5ff', '#ff9100', '#d500f9', '#76ff03', '#ffea00', '#ff1744']

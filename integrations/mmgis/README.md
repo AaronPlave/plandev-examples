@@ -37,7 +37,8 @@ PlanDev plan page ── postMessage plandev.embed.v1 (ids + time only) ──�
 | `lib/util.js` | Pure helpers: intervals, profile evaluation, GeoJSON validation, great-circle distance, planar point/segment-in-polygon. |
 | `missions/mro.js`, `missions/hopper.js` | **Mission adapters.** Each one defines its goal arguments and parameters, how it reads the goal's outputs, its metrics and table, its map features, and the position track. |
 | `tools/PlanDev/PlanDevTool.js` | MMGIS tool panel. Generic: forms, tables and metrics are rendered from what the adapter returns. Selects the adapter with the tool variable `mission`. |
-| `tools/PlanDev/PlanDevEmbed.js` | Embedded mode: the MMGIS end of the `plandev.embed.v1` bridge. |
+| `tools/PlanDev/PlanDevEmbed.js` | Embedded mode: the MMGIS end of the `plandev.embed.v1` bridge, embedded state, map drawing and the spatial editor. |
+| `tools/PlanDev/PlanDevEmbedUI.js` | Embedded mode's controls over the map: plan bar, selection card, terrain readout, inspector, layers, edit bar. |
 | `scripts/setup-plandev.js` | Uploads each mission's model, goal and constraints, and creates or imports its plans. For the hopper this includes *Reiner Gamma ops (existing plan)*, built the way a PlanDev user would build it. |
 | `scripts/setup-mmgis.js` | Creates the `Mars-PlanDev` and `Moon-PlanDev` MMGIS missions (`mission/*.config.json`). |
 | `deploy/plandev-spice.override.yml` | Compose override that mounts `spice-kernels/` into merlin and its workers, and into the scheduler workers (MRO only). |
@@ -118,33 +119,32 @@ The plan page's *External Application* panel (`IFrame.svelte` in plandev-ui) pos
 
 Posts go to the iframe src's origin only, at most one every 100 ms.
 
-The panel accepts four requests, and only from that iframe at that origin: `ready`, `setTime`, `select`, and `openPlan`. `openPlan` navigates to another plan and keeps the current view; the iframe and the MMGIS tool's state survive the navigation. No credentials or simulation results cross the bridge; MMGIS fetches the view with its own session.
+The panel accepts five requests, and only from that iframe at that origin: `ready`, `setTime`, `select`, `openPlan` and `showSimulation`. `setTime` may carry `endMs`; PlanDev then frames that window on its timeline (used for constraint violations). `openPlan` navigates to another plan and keeps the current view; the iframe and the MMGIS tool's state survive the navigation. No credentials or simulation results cross the bridge; MMGIS fetches the view with its own session.
 
 On the MMGIS side the bridge runs only when MMGIS is framed by an origin listed in the PlanDev tool's `embedOrigins` variable. MMGIS's `FRAME_ANCESTORS` must allow that origin too.
 
-What MMGIS shows, with no tool panel opened:
+What MMGIS shows, with no tool panel opened. It is PlanDev's spatial view of the open plan, not a second application; MMGIS's own interface is hidden (⋯ → *Show full MMGIS tools* brings it back).
 
-- **The map and one card.** MMGIS's own interface (top bar, toolbar, coordinates, tool panel) is hidden while embedded; *Map tools* on the card brings it back. The card shows:
-  - the plan, and whether it is an alternative;
-  - where each tracked entity is at the cursor, with *follow*;
-  - the selected feature's details and any constraint window it overlaps;
-  - the headline metrics, with differences from a compared plan;
-  - constraint violations (click one to move the cursor there);
-  - the mission's data overlays (rover: the terrain grid, with legend and a value under the pointer);
-  - *Compare with* (default: the plan it was derived from), whose route is drawn in orange;
-  - *Try a change…* (below).
-- **Time:** features dim until they start. The position is the latest simulated sample at or before the cursor, not interpolated:
+- **Plan bar** (one line, top of the map): the plan's short name, *alternative* for a working branch, the simulation state (*Simulated*, *Earlier sim N*, *Sim of rev N*, *Planned only*, *Scheduling…*, *Simulating…*, *New simulation N*, *Run failed*), the constraint-violation count, *Layers*, *Edit*, *Details* and *⋯*. A second line gives each tracked entity's position at the time cursor and the activity in progress, and the compared plan. Plan and dataset ids are in tooltips and the ⋯ menu.
+- **Selection card**: the selected feature or activity (from the map or PlanDev): the adapter's `details`, constraint windows it overlaps, and, for a site, its observation activities.
+- **Terrain readout** under the pointer (the first overlay with data: value, coordinates, cell size). Shift-click pins a sample on the map; click a pin to remove it.
+- **Details inspector** beside the map (it narrows the map rather than covering it; drag its edge to resize):
+  - *Sites*: each site's outcome from the plan and its simulation (`properties.outcome` on site features: observed, reached, missed, requested but unscheduled, planned only, unknown), with a reason where the adapter knows one. Hidden for adapters that report no outcomes.
+  - *Route*: the adapter's activity table, with totals for `sum` columns. Rows select the activity.
+  - *Metrics*: every adapter metric.
+  - *Constraints*: every violation window of the current (and compared) plan, with the activities in progress and what the map can say about where: the vehicle's recorded positions during the window, one held position, or none. Selecting one moves PlanDev's cursor, frames it on the timeline, and highlights it on the map.
+  - *Compare*: current and compared plan identified by colour, simulation and lineage; metrics as Current | Compared | Δ (current − compared, without judging which is better). The chooser offers earlier simulations of this plan, the source, sibling and derived alternatives and recent picks, with search over the rest. Default: the plan it was derived from.
+- **Layers**: overlays with opacity, legend and provenance on demand; the current and compared routes; *follow the vehicle*.
+- **Time:** features dim until they start. The position is the latest simulated sample at or before the cursor, and only within the time its simulation covers (`coverage`: the plan's simulated span). Outside it, the entity shows *no position data at this time* instead of a frozen last position. Per mission:
   - MRO: 30 s `subSCBodies_MARS_*` samples, with a ±45 min sampled-track window and the in-view circle.
   - Hopper: `hopper.latitude/longitude`, which change when a hop lands.
   - Rover: `rover.latitude/longitude`, which change at each waypoint.
-- **A second plan's entities:** add `plandevAlso=<plan id>` to the iframe URL, for example a rover plan with the MRO plan. The plan must be on the same body.
-- **Timeline → map:** a selection in the timeline selects the activity's `primary` feature.
-- **Map → timeline:** clicking a feature selects its span or directive in PlanDev and moves the cursor to the activity's start. Clicking near a shown position sample moves the cursor to that sample.
-- **Plan or dataset change:** the features reload. The map fits once per plan; it never recentres while you explore unless *follow* is on.
-- **Try a change…** edits the open plan's goal inputs on the map: drag sites, add sites or regions to avoid, set priorities and the goal parameters.
+- **A second plan's entities:** add `plandevAlso=<plan id>` to the iframe URL, for example a rover plan with the MRO plan. The plan must be on the same body. It only has a position where its simulation covers the cursor time.
+- **Timeline ↔ map:** a selection in the timeline selects the activity's `primary` feature; clicking a feature or a table row selects its span in PlanDev and moves the cursor. Clicking near a shown position sample moves the cursor to that sample.
+- **Edit** changes the open plan's goal inputs on the map. Sites are draggable markers; regions use Leaflet.Editable (bundled with MMGIS, which its Draw tool also uses): drag corners, drag a mid-edge handle to add one, click a corner to delete it, drag a region to move it. A new region shows a guide line to the pointer and is finished by clicking its first or last corner, double-click or Enter; Backspace removes the last corner, Escape cancels. Self-crossing regions are refused. The inputs list gives immediate local feedback (terrain at each site against the drivable limit, outside the grid, inside a region; whether a region crosses the current route or contains a site); the scheduling goal stays the authority on the route.
   - *Check current plan* is read-only (the adapter's `evaluate`).
-  - *Plan alternative* branches the plan (`explore`), and PlanDev opens the branch. On a branch, *Re-plan* updates it in place.
-  - When the run's simulation is ready, the card asks PlanDev to show it (`showSimulation`). *Keep as plan* ends the exploration.
+  - *Plan alternative* branches the plan (`explore`), and PlanDev opens the branch. On a branch, *Re-plan* updates it in place. Nothing runs until one of these is clicked.
+  - The run is followed through the mission's plan list (latest dataset, `phase`, `error`), not the dataset PlanDev happens to show. When its simulation is ready the map asks PlanDev to show it (`showSimulation`), unless the user picked another simulation in PlanDev meanwhile. ⋯ → *Keep this alternative as a plan* ends the exploration.
 
 ## Data conventions
 
@@ -255,7 +255,7 @@ The steps below are what this prototype was verified with. Ports belong to the `
 The installed plugin is a copy: after editing the plugin, run `npm run plugins -- uninstall plandev` and then install again. Restart MMGIS for backend changes.
 
 Tests:
-- `node --test integrations/mmgis/test/*.test.js`
+- `node --test integrations/mmgis/test/*.test.js` (includes `embed.test.js`: positions outside a simulation's time, a run finishing while PlanDev shows an older simulation, region validity, site outcomes)
 - `./gradlew :examples:05-orbiter:scheduling:test`: the MRO pass search against the real kernels.
 - `./gradlew :examples:04-hopper:scheduling:test`: route ordering and `HopModel`.
 - `./gradlew :examples:11-rover:scheduling:test`: routing over terrain, slope limit, avoid regions, recharge splits, deadline trade-offs, and the shipped grid separating the objectives.

@@ -190,6 +190,80 @@ function checkParams(spec, input) {
     return out
 }
 
+/** Whether a closed ring ([lon, lat] pairs, first point not repeated) has two non-adjacent edges that cross. */
+function ringSelfIntersects(ring) {
+    const n = ring.length
+    const cross = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+    for (let i = 0; i < n; i++) {
+        const a = ring[i], b = ring[(i + 1) % n]
+        for (let j = i + 2; j < n; j++) {
+            if (i === 0 && j === n - 1) continue // adjacent through the closing edge
+            const c = ring[j], d = ring[(j + 1) % n]
+            if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) return true
+        }
+    }
+    return false
+}
+
+/** Problems that make a drawn region unusable as a goal input, or null. */
+function regionProblem(ring) {
+    if (ring.length < 3) return 'needs at least 3 corners'
+    if (ringSelfIntersects(ring)) return 'its edges cross'
+    return null
+}
+
+/**
+ * Where a tracked entity is at time t: { sample } (the last sample at or before t), or { outside, coverFrom,
+ * coverTo } when t is not in the time its simulation covers (entity.coverage; without one, its first to last sample).
+ * Two independently dated simulations are only simultaneous where both cover t.
+ */
+function positionAt(entity, t) {
+    const s = entity?.samples || []
+    if (t == null || !s.length) return { outside: 'no-time' }
+    const from = entity.coverage?.startMs ?? s[0][0]
+    const to = entity.coverage?.endMs ?? s.at(-1)[0]
+    if (t < from) return { outside: 'before', coverFrom: from, coverTo: to }
+    if (t > to) return { outside: 'after', coverFrom: from, coverTo: to }
+    let lo = 0, hi = s.length - 1, k = -1
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        if (s[mid][0] <= t) (k = mid), (lo = mid + 1)
+        else hi = mid - 1
+    }
+    return k < 0 ? { outside: 'before', coverFrom: from, coverTo: to } : { sample: s[k] }
+}
+
+/**
+ * One poll of a scheduling + simulation run started from the map, independent of the dataset the host
+ * happens to show. run: { planId, fromDs, target?, userPicked?, idle? }; entry: the plan's row from
+ * missions/:key/plans; shownDs: the dataset PlanDev shows. Returns the next run (null when finished)
+ * and what to tell the user and PlanDev.
+ *   phase: 'scheduling' | 'simulating' | 'complete' | 'failed'
+ *   show:  a dataset id to ask PlanDev to show, or null
+ */
+function runStep(run, entry, shownDs) {
+    if (!entry) return { run, phase: 'scheduling', show: null }
+    if (entry.error) return { run: null, phase: 'failed', message: entry.error, show: null }
+    if (entry.running) return { run: { ...run, idle: 0 }, phase: entry.phase || 'scheduling', show: null }
+    const ds = entry.latest
+    if (ds && ds.simulationDatasetId !== run.fromDs) {
+        if (ds.status === 'failed') return { run: null, phase: 'failed', message: `simulation ${ds.simulationDatasetId} failed`, show: null }
+        if (ds.status === 'success') {
+            const shown = shownDs === ds.simulationDatasetId
+            // The user picked another simulation in PlanDev meanwhile: their choice stands.
+            if (run.userPicked || shown) return { run: null, phase: 'complete', show: null, simulationDatasetId: ds.simulationDatasetId }
+            // PlanDev may not list the new dataset yet; keep asking for a while.
+            const tries = (run.tries || 0) + 1
+            return { run: tries > 10 ? null : { ...run, target: ds.simulationDatasetId, tries }, phase: 'complete', show: ds.simulationDatasetId, simulationDatasetId: ds.simulationDatasetId }
+        }
+        return { run, phase: 'simulating', show: null }
+    }
+    // Not running, nothing new: give the server a few polls (it may not have registered the run yet).
+    const idle = (run.idle || 0) + 1
+    if (idle > 3) return { run: null, phase: 'failed', message: 'the run ended without a new simulation', show: null }
+    return { run: { ...run, idle }, phase: 'scheduling', show: null }
+}
+
 module.exports = {
     intervalToSec,
     secToInterval,
@@ -205,4 +279,8 @@ module.exports = {
     segmentHitsRing,
     pointToSegmentKm,
     integrateStep,
+    ringSelfIntersects,
+    regionProblem,
+    positionAt,
+    runStep,
 }
