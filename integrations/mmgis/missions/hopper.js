@@ -42,6 +42,8 @@ module.exports = {
         time: 'UTC',
     },
     targets: { types: ['Point'], max: 12, ordered: true },
+    // The tracked entity, declared: piecewise constant, it changes when a hop lands (generic layer reads it).
+    tracked: [{ label: 'Hopper location', lat: R.lat, lon: R.lon, hold: 'step', note: 'Simulated hopper.latitude/longitude: changes when a hop lands; position during a hop is not modeled.' }],
     params: [
         { key: 'order', label: 'Visit order', type: 'enum', options: ['AS_DRAWN', 'NEAREST_NEXT'], default: 'AS_DRAWN' },
         { key: 'restAfterHopMin', label: 'Rest after each hop', unit: 'min', type: 'number', min: 0, max: 600, default: 30 },
@@ -146,13 +148,6 @@ module.exports = {
         notes.push({ text: 'Dashed hop legs are assumed straight paths between the simulated take-off and landing locations (solid points); the in-flight path, terrain and illumination are not modeled.' })
         return {
             features,
-            position: {
-                label: 'Hopper location',
-                samples: pr[R.lat].map((s) => [ms(s.t), valueAt(pr[R.lon], s.t), valueAt(pr[R.lat], s.t)]).filter(([, lo, la]) => typeof lo === 'number' && typeof la === 'number'),
-                hold: 'step', // the simulated location is piecewise constant: it changes when a hop lands
-                note: 'Simulated hopper.latitude/longitude: changes when a hop lands; position during a hop is not modeled.',
-                trackWindowMs: null, // show the whole itinerary
-            },
             table: {
                 columns: [
                     { key: 'leg', label: 'Leg', digits: 0 },

@@ -16,7 +16,7 @@ The same code drives three missions:
 
 - **`mro`**: radar observations of Mars targets (`examples/05-orbiter`).
 - **`hopper`**: a lunar hop-and-image traverse (`examples/04-hopper`).
-- **`rover`**: a Jezero crater traverse planned over real terrain slope (`examples/11-rover`). Its plans are made in PlanDev, not from the map; embedded MMGIS shows them as soon as they are opened.
+- **`rover`**: a Jezero crater traverse planned over real terrain slope and the Sun's position (`examples/11-rover`). Its plans are made in PlanDev, not from the map; embedded MMGIS shows them as soon as they are opened.
 
 ```
 MMGIS Draw ──GeoJSON──▶ PlanDev tool ──/api/plandev──▶ backend plugin (MMGIS server, holds PlanDev credentials)
@@ -53,7 +53,9 @@ PlanDev plan page ── postMessage plandev.embed.v1 (ids + time only) ──�
 | `targets: {types, max, ordered, keep?, roles?, priority?}` | Validating the targets the browser sends. `keep` names the feature properties passed through (the rover's `priority`). `roles` and `priority` label the embedded editor's tools. |
 | `params: [{key, label, unit, type, min, max, options, default}]` | Validating parameters and rendering the form. |
 | `goals: [{name, arguments(targets, params)}]` / `inputsFromGoalArguments({name: args})` | The scheduling goals (by PlanDev goal name) that take the map's inputs, and converting to and from their spec-goal arguments. The plan's scheduling specification decides their order and simulate-after settings; other goals in it run untouched. |
-| `interpret(ctx)` → `{features, position, overlays?, table, notes}` | Map features, position track, per-activity table and notes for one simulation dataset. A position sample is `[ms, lon, lat, capDeg?]`, where `capDeg` is an optional circle that moves with the entity (MRO: where it is in view). `overlays: [{id, name, datasetId, url, usedByPlan, usedBySimulation, source}]` are gridded data products the map can draw. |
+| `interpret(ctx)` → `{features, position?, overlays?, sun?, table, notes}` | Map features, position track, per-activity table and notes for one simulation dataset. A position sample is `[ms, lon, lat, capDeg?]`, where `capDeg` is an optional circle that moves with the entity (MRO: where it is in view). `overlays: [{id, name, datasetId, url, usedByPlan, usedBySimulation, source}]` are gridded data products the map can draw. `sun` (rover) is solar context at the vehicle, from the simulation's resources: `{minElevationDeg, samples: [[ms, elevationDeg, windowOpen, ltstHours]], dark: [[ms, ms]]}`. |
+| `tracked: [{label, lat, lon, hold, note?}]` | *Optional, declarative.* Entities whose position track the generic layer reads from two named resources (planetocentric latitude, east-positive longitude, in the adapter's `conventions`). Used when `interpret` returns no `position`. Hopper and rover declare theirs; MRO builds its own (it adds the in-view circle and a sampled-track window). Nothing is inferred from resource names. |
+| `explainError(cause)` | *Optional.* One line for a run failure whose exception message the adapter understands (rover: the planner's site limit), else null. |
 | `interpretsPlanOnly` | *Optional.* `interpret` can draw a plan from its directives alone (`ctx.dataset` is null), so an unsimulated plan still shows its planned geometry (rover). |
 | `data: {name: async () => grid}` | *Optional.* Data products served at `missions/:key/data/:name`, such as the rover's terrain. |
 | `metrics(ctx)` → `[{key, name, value, unit, digits, headline?, better?}]` | Summary metrics. The generic code also computes them on the plan this one was derived from (`parent_id`), and adds that value to each metric as `base`. The embedded card leads with `headline` metrics. `better` (`low` or `high`) colours a difference as an improvement or not. |
@@ -119,14 +121,20 @@ The plan page's *External Application* panel (`IFrame.svelte` in plandev-ui) pos
 
 Posts go to the iframe src's origin only, at most one every 100 ms.
 
-The panel accepts five requests, and only from that iframe at that origin: `ready`, `setTime`, `select`, `openPlan` and `showSimulation`. `setTime` may carry `endMs`; PlanDev then frames that window on its timeline (used for constraint violations). `openPlan` navigates to another plan and keeps the current view; the iframe and the MMGIS tool's state survive the navigation. No credentials or simulation results cross the bridge; MMGIS fetches the view with its own session.
+The context also carries `expanded`: whether PlanDev shows this panel expanded over its workspace.
+
+The panel accepts seven requests, and only from that iframe at that origin: `ready`, `setTime`, `select`, `openPlan`, `showSimulation`, `expandPanel` and `restorePanel`. The last two name no panel: PlanDev expands or restores the one that frame is in, and its own control (and Escape) can always restore it. `setTime` may carry `endMs`; PlanDev then frames that window on its timeline (used for constraint violations). `openPlan` navigates to another plan and keeps the current view; the iframe and the MMGIS tool's state survive the navigation. No credentials or simulation results cross the bridge; MMGIS fetches the view with its own session.
 
 On the MMGIS side the bridge runs only when MMGIS is framed by an origin listed in the PlanDev tool's `embedOrigins` variable. MMGIS's `FRAME_ANCESTORS` must allow that origin too.
 
 What MMGIS shows, with no tool panel opened. It is PlanDev's spatial view of the open plan, not a second application; MMGIS's own interface is hidden (⋯ → *Show full MMGIS tools* brings it back).
 
-- **Plan bar** (one line, top of the map): the plan's short name, *alternative* for a working branch, the simulation state (*Simulated*, *Earlier sim N*, *Sim of rev N*, *Planned only*, *Scheduling…*, *Simulating…*, *New simulation N*, *Run failed*), the constraint-violation count, *Layers*, *Edit*, *Details* and *⋯*. A second line gives each tracked entity's position at the time cursor and the activity in progress, and the compared plan. Plan and dataset ids are in tooltips and the ⋯ menu.
-- **Selection card**: the selected feature or activity (from the map or PlanDev): the adapter's `details`, constraint windows it overlaps, and, for a site, its observation activities.
+- **Map only:** MMGIS's Viewer and Globe screens are closed and their splitters removed through MMGIS's own layout state (`uiStore`: `setPanelPercents(0, 100, 0)`, `hasViewer`/`hasGlobe` false), not hidden with CSS. *Show full MMGIS tools* restores them as they were.
+- **Expand:** PlanDev's panel header has an expand control on every grid panel; the map's ⤢ asks PlanDev for the same (`expandPanel`). The panel is the same element lifted over the grid, so the iframe, its map, selection, comparison and editing survive; Escape (in PlanDev or the map) restores the grid, whose saved sizes never change.
+- **Plan bar** (one line, top of the map): the plan's short name, *alternative* for a working branch, the simulation state (*Simulated*, *Earlier sim N*, *Sim of rev N*, *Planned only*, *Scheduling…*, *Simulating…*, *New simulation N*, or a failure), the constraint-violation count, *Layers*, *Edit*, *Details*, expand and *⋯*. A second line gives each tracked entity's position at the time cursor, the activity in progress, the Sun at the vehicle (rover: elevation, whether the drive window is open, when it next opens or closes, and *driving in the dark* during a `DriveDaylight` window), and the compared plan. Plan and dataset ids are in tooltips and the ⋯ menu.
+- **Run failures** take one bounded line: *Scheduling failed*, or a line the adapter gives for a cause it understands (*Too many sites: 9 (the planner takes at most 8)*). Click it for what the map still shows (the earlier simulation, which does not reflect the failed inputs) and the raw reason (Java trace) under *Technical details*.
+- **Selection card**: the selected feature or activity (from the map or PlanDev): the adapter's `details`, constraint windows it overlaps, and, for a site, its observation activities. With a comparison, the same site or destination in the compared plan (matched by target or site id only; otherwise nothing is claimed).
+- **Compared plan on the map**: its routes, sites, observations, waits, avoided regions and constraint locations are clickable, in orange (dashed where simulated), with tooltips naming the plan. Selecting one opens a card that says which plan owns it and offers *Open plan #N in PlanDev* and *Show on PlanDev's timeline* (the cursor only). It never selects anything in PlanDev, whose selection belongs to the open plan. A comparison with a plan follows that plan's newest simulation (re-read when the plan list reports a new one); an earlier simulation picked explicitly stays pinned and is labelled so.
 - **Terrain readout** under the pointer (the first overlay with data: value, coordinates, cell size). Shift-click pins a sample on the map; click a pin to remove it.
 - **Details inspector** beside the map (it narrows the map rather than covering it; drag its edge to resize):
   - *Sites*: each site's outcome from the plan and its simulation (`properties.outcome` on site features: observed, reached, missed, requested but unscheduled, planned only, unknown), with a reason where the adapter knows one. Hidden for adapters that report no outcomes.
@@ -139,7 +147,7 @@ What MMGIS shows, with no tool panel opened. It is PlanDev's spatial view of the
   - MRO: 30 s `subSCBodies_MARS_*` samples, with a ±45 min sampled-track window and the in-view circle.
   - Hopper: `hopper.latitude/longitude`, which change when a hop lands.
   - Rover: `rover.latitude/longitude`, which change at each waypoint.
-- **A second plan's entities:** add `plandevAlso=<plan id>` to the iframe URL, for example a rover plan with the MRO plan. The plan must be on the same body. It only has a position where its simulation covers the cursor time.
+- **A second plan's entities:** add `plandevAlso=<plan id>` to the iframe URL. The plan must be on the same body. It only has a position where its simulation covers the cursor time. The Jezero view does not use it: the MRO demo plan neither overlaps the rover plans in time nor models relay coverage, so it added nothing to the rover workflow.
 - **Timeline ↔ map:** a selection in the timeline selects the activity's `primary` feature; clicking a feature or a table row selects its span in PlanDev and moves the cursor. Clicking near a shown position sample moves the cursor to that sample.
 - **Edit** changes the open plan's goal inputs on the map. Sites are draggable markers; regions use Leaflet.Editable (bundled with MMGIS, which its Draw tool also uses): drag corners, drag a mid-edge handle to add one, click a corner to delete it, drag a region to move it. A new region shows a guide line to the pointer and is finished by clicking its first or last corner, double-click or Enter; Backspace removes the last corner, Escape cancels. Self-crossing regions are refused. The inputs list gives immediate local feedback (terrain at each site against the drivable limit, outside the grid, inside a region; whether a region crosses the current route or contains a site); the scheduling goal stays the authority on the route.
   - *Check current plan* is read-only (the adapter's `evaluate`).
@@ -198,7 +206,8 @@ The steps below are what this prototype was verified with. Ports belong to the `
    ./gradlew :examples:05-orbiter:scheduling:buildSchedulingProcedureJar_ScheduleTargetObservations \
              :examples:04-hopper:scheduling:buildSchedulingProcedureJar_ScheduleHopTraverse \
              :examples:04-hopper:constraints:buildAllConstraintProcedureJars
-   # rover (see examples/11-rover/README.md); its plans also use the hopper's MinBatterySOC and OnboardStorageFull jars
+   # rover (see examples/11-rover/README.md); its plans also use the hopper's MinBatterySOC and OnboardStorageFull jars,
+   # and its own DriveSlopeLimit and DriveDaylight
    ./gradlew :examples:11-rover:build :examples:11-rover:scheduling:compileJava :examples:11-rover:constraints:compileJava
    ./gradlew :examples:11-rover:scheduling:buildSchedulingProcedureJar_ScheduleTraverse :examples:11-rover:constraints:buildAllConstraintProcedureJars
    ```
@@ -255,10 +264,11 @@ The steps below are what this prototype was verified with. Ports belong to the `
 The installed plugin is a copy: after editing the plugin, run `npm run plugins -- uninstall plandev` and then install again. Restart MMGIS for backend changes.
 
 Tests:
-- `node --test integrations/mmgis/test/*.test.js` (includes `embed.test.js`: positions outside a simulation's time, a run finishing while PlanDev shows an older simulation, region validity, site outcomes)
+- `node --test integrations/mmgis/test/*.test.js` (includes `embed.test.js`: positions outside a simulation's time, a run finishing while PlanDev shows an older simulation, region validity, site outcomes, compared-feature matching, comparisons that follow a re-run; and `rover.test.js`: declared position tracks, bounded run failures)
 - `./gradlew :examples:05-orbiter:scheduling:test`: the MRO pass search against the real kernels.
 - `./gradlew :examples:04-hopper:scheduling:test`: route ordering and `HopModel`.
-- `./gradlew :examples:11-rover:scheduling:test`: routing over terrain, slope limit, avoid regions, recharge splits, deadline trade-offs, and the shipped grid separating the objectives.
+- `./gradlew :examples:11-rover:scheduling:test`: routing over terrain, slope limit, avoid regions, recharge splits, deadline trade-offs, the shipped grid separating the objectives; `MarsSun` against SPICE; daylight drives inside the window with the margin, split across sols; any-hour drives in the dark.
+- plandev-ui `src/utilities/embedBridge.test.ts`: the bridge's requests, including `expandPanel`/`restorePanel`. The panel's survival across expand/restore (same iframe, viewport, selection, comparison) was checked in the browser; there is no automated UI test for it.
 
 ## Prototype limits
 

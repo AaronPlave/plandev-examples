@@ -107,6 +107,96 @@
             "horizontalGuides": []
           },
           {
+            "id": 5,
+            "name": "rover.sunElevationDeg",
+            "yAxes": [
+              {
+                "id": 5,
+                "color": "#1b1d1e",
+                "label": {
+                  "text": "rover.sunElevationDeg"
+                },
+                "tickCount": 5,
+                "domainFitMode": "fitTimeWindow",
+                "renderTickLines": true
+              }
+            ],
+            "height": 90,
+            "layers": [
+              {
+                "id": 5,
+                "name": "",
+                "filter": {
+                  "resource": "rover.sunElevationDeg"
+                },
+                "yAxisId": 5,
+                "chartType": "line",
+                "lineColor": "#f9a825",
+                "lineWidth": 1,
+                "pointRadius": 2
+              }
+            ],
+            "expanded": true,
+            "discreteOptions": {
+              "height": 16,
+              "displayMode": "compact",
+              "activityOptions": {
+                "composition": "both",
+                "hierarchyMode": "flat"
+              },
+              "labelVisibility": "auto",
+              "externalEventOptions": {
+                "groupBy": "event_type_name"
+              }
+            },
+            "autoAdjustHeight": false,
+            "horizontalGuides": [
+              {
+                "id": 0,
+                "label": {
+                  "text": "drive limit 10\u00b0",
+                  "color": "#c62828"
+                },
+                "y": 10,
+                "yAxisId": 5
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "name": "rover.driveWindowOpen",
+            "yAxes": [],
+            "height": 40,
+            "layers": [
+              {
+                "id": 6,
+                "name": "",
+                "filter": {
+                  "resource": "rover.driveWindowOpen"
+                },
+                "yAxisId": null,
+                "chartType": "x-range",
+                "colorScheme": "schemeTableau10",
+                "opacity": 0.8
+              }
+            ],
+            "expanded": true,
+            "discreteOptions": {
+              "height": 16,
+              "displayMode": "compact",
+              "activityOptions": {
+                "composition": "both",
+                "hierarchyMode": "flat"
+              },
+              "labelVisibility": "auto",
+              "externalEventOptions": {
+                "groupBy": "event_type_name"
+              }
+            },
+            "autoAdjustHeight": false,
+            "horizontalGuides": []
+          },
+          {
             "id": 2,
             "name": "rover.slopeDeg",
             "yAxes": [
@@ -132,52 +222,6 @@
                 "yAxisId": 2,
                 "chartType": "line",
                 "lineColor": "#283593",
-                "lineWidth": 1,
-                "pointRadius": 2
-              }
-            ],
-            "expanded": true,
-            "discreteOptions": {
-              "height": 16,
-              "displayMode": "compact",
-              "activityOptions": {
-                "composition": "both",
-                "hierarchyMode": "flat"
-              },
-              "labelVisibility": "auto",
-              "externalEventOptions": {
-                "groupBy": "event_type_name"
-              }
-            },
-            "autoAdjustHeight": false,
-            "horizontalGuides": []
-          },
-          {
-            "id": 3,
-            "name": "onboard.volume",
-            "yAxes": [
-              {
-                "id": 3,
-                "color": "#1b1d1e",
-                "label": {
-                  "text": "onboard.volume"
-                },
-                "tickCount": 5,
-                "domainFitMode": "fitTimeWindow",
-                "renderTickLines": true
-              }
-            ],
-            "height": 90,
-            "layers": [
-              {
-                "id": 3,
-                "name": "",
-                "filter": {
-                  "resource": "onboard.volume"
-                },
-                "yAxisId": 3,
-                "chartType": "line",
-                "lineColor": "#2e7d32",
                 "lineWidth": 1,
                 "pointRadius": 2
               }

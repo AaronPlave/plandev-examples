@@ -173,6 +173,91 @@ function integrateStep(segments, from, to) {
     return sum
 }
 
+/**
+ * Intervals [[from, to]] within [from, to] where every discrete profile's value satisfies its test:
+ * conds is [[segments, (value) => boolean], ...]. Profiles change only at segment starts.
+ */
+function intervalsWhere(conds, from, to) {
+    const times = [...new Set([from, ...conds.flatMap(([segs]) => segs.map((s) => s.t))])].filter((t) => t >= from && t < to).sort((a, b) => a - b)
+    const out = []
+    times.forEach((t, i) => {
+        const end = times[i + 1] ?? to
+        if (!conds.every(([segs, test]) => test(valueAt(segs, t)))) return
+        if (out.length && out.at(-1)[1] === t) out.at(-1)[1] = end
+        else out.push([t, end])
+    })
+    return out
+}
+
+/**
+ * A run failure for display: a one-line `summary`, the exception message PlanDev reported (`cause`, when one
+ * can be found in its reason), and the raw reason as `detail`. No interpretation beyond that: adapters may
+ * map a cause they understand to a better summary (adapter.explainError).
+ */
+function runFailure(stage, reason) {
+    const detail = reason == null ? '' : typeof reason === 'string' ? reason : JSON.stringify(reason, null, 2)
+    const text = typeof reason === 'string' ? reason : reason?.data?.trace ?? reason?.data?.message ?? reason?.message ?? detail
+    const m = /(?:Exception|Error): ([^\n]+)/.exec(String(text))
+    const cause = m ? m[1].trim().slice(0, 200) : null
+    const Stage = stage[0].toUpperCase() + stage.slice(1)
+    // A Java trace reads better as itself than inside escaped JSON.
+    const trace = reason?.data?.trace
+    return { stage, cause, summary: `${Stage} failed`, detail: typeof trace === 'string' ? `${reason.data.type ?? ''}\n${trace}`.trim() : detail }
+}
+
+/**
+ * A tracked entity's position track from two profiles, declared rather than coded: `spec` is
+ * { label, lat, lon, hold: 'step' | 'sample', note? } naming the latitude and longitude resources
+ * (planetocentric, east-positive degrees, in the adapter's declared body and frame). One sample per change
+ * of either value: [ms, lon, lat]. Nothing is guessed from resource names.
+ */
+function positionFromProfiles(pr, spec, startMs, conventions = {}) {
+    const lat = pr[spec.lat] || []
+    const lon = pr[spec.lon] || []
+    const times = [...new Set([...lat, ...lon].map((s) => s.t))].sort((a, b) => a - b)
+    const samples = []
+    for (const t of times) {
+        const lo = valueAt(lon, t)
+        const la = valueAt(lat, t)
+        const prev = samples.at(-1)
+        if (typeof lo !== 'number' || typeof la !== 'number' || (prev && prev[1] === lo && prev[2] === la)) continue
+        samples.push([startMs + t * 1000, lo, la])
+    }
+    return {
+        label: spec.label,
+        samples,
+        hold: spec.hold ?? 'step',
+        note: spec.note ?? `Simulated ${spec.lat} / ${spec.lon} (${conventions.coordinates ?? 'degrees'}, ${conventions.frame ?? ''}).`,
+        trackWindowMs: spec.trackWindowMs ?? null,
+        source: { lat: spec.lat, lon: spec.lon, basis: 'simulated' },
+    }
+}
+
+/**
+ * The feature of `view` that stands for the same thing as `f` (of the other plan): a site by its target id,
+ * a drive or route by its destination, an observation by its site. Nothing is matched on anything weaker.
+ */
+function counterpart(f, view) {
+    const p = f?.properties
+    if (!p || !view) return undefined
+    const key = p.kind === 'site' || p.kind === 'target' || p.kind === 'avoid' ? ['targetId', p.targetId]
+        : p.kind === 'route' || p.kind === 'drive' ? ['toSiteId', p.toSiteId]
+        : p.kind === 'observation' || p.kind === 'picture' ? ['siteId', p.siteId] : null
+    if (!key || key[1] == null) return undefined
+    const xs = view.features.filter((x) => x.properties[key[0]] === key[1] && (x.properties.kind === p.kind || (p.kind === 'route' && x.properties.kind === 'drive') || (p.kind === 'drive' && x.properties.kind === 'route')))
+    return xs.find((x) => x.properties.kind === p.kind && x.properties.primary) || xs.find((x) => x.properties.kind === p.kind) || xs[0] || null
+}
+
+/**
+ * Whether a loaded comparison ({ planId, ds, view }) should be read again: it follows its plan's latest
+ * simulation (no pinned `ds`) and the plan list now names a newer successful one. A pinned simulation never is.
+ */
+function comparisonOutdated(other, plans) {
+    if (!other?.view || other.ds != null) return false
+    const latest = plans.find((x) => x.id === other.planId)?.latest
+    return latest?.status === 'success' && latest.simulationDatasetId !== other.view.provenance.simulationDatasetId
+}
+
 /** Validate a numeric parameter against an adapter's param spec. */
 function checkParams(spec, input) {
     const out = {}
@@ -265,6 +350,11 @@ function runStep(run, entry, shownDs) {
 }
 
 module.exports = {
+    comparisonOutdated,
+    counterpart,
+    intervalsWhere,
+    positionFromProfiles,
+    runFailure,
     intervalToSec,
     secToInterval,
     greatCircleKm,

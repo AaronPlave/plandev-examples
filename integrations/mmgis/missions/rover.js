@@ -10,7 +10,7 @@
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
-const { extremaOver, greatCircleKm, integrateStep, pointInRing, pointToSegmentKm, valueAt } = require('../lib/util')
+const { extremaOver, greatCircleKm, integrateStep, intervalsWhere, pointInRing, pointToSegmentKm, valueAt } = require('../lib/util')
 
 const R = {
     lat: 'rover.latitude', // deg, planetocentric
@@ -24,13 +24,21 @@ const R = {
     volume: 'onboard.volume', // bits
     maxVolume: 'onboard.maxVolume',
     received: 'onboard.receivedVolume',
+    // The Sun at the rover (model version 2; absent from older plans): geometric elevation, local true
+    // solar time, and the mission's drive window (elevation at least the mission's minimum).
+    sun: 'rover.sunElevationDeg',
+    ltst: 'rover.localSolarTimeHours',
+    window: 'rover.driveWindowOpen',
+    minSun: 'rover.driveMinSunElevationDeg',
+    margin: 'rover.driveDaylightMarginMin',
 }
+const SUN = [R.sun, R.ltst, R.window, R.minSun, R.margin]
 const RADIUS_KM = 3396.19 // must match rover.DriveModel.MARS_RADIUS_KM
 const STEEP_DEG = 10 // "steep terrain" in the metrics; a reporting threshold, not a model limit
 const ON_SITE_KM = 0.1
 const MIN = 60e6 // microseconds per minute
 const GOAL = 'ScheduleTraverse'
-const DEFAULTS = { objective: 'MIN_ENERGY', maxSlopeDeg: 20, minSOC: 30, observeDurationMin: 30, startAfterMin: 60 } // ScheduleTraverse.Defaults
+const DEFAULTS = { objective: 'MIN_ENERGY', maxSlopeDeg: 20, minSOC: 30, observeDurationMin: 30, startAfterMin: 60, driveWindow: 'DAYLIGHT' } // ScheduleTraverse.Defaults
 
 // The mission's data products, read from the mission package itself: the same files the model jar ships.
 const DATA_DIR = process.env.PLANDEV_ROVER_DATA_DIR || path.resolve(__dirname, '../../../examples/11-rover/src/main/resources/rover')
@@ -62,7 +70,10 @@ function terrain() {
 }
 const catalog = () => JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'sites.geojson'), 'utf8'))
 
-const hm = (sec) => (sec >= 3600 ? `${Math.floor(sec / 3600)} h ${String(Math.round((sec % 3600) / 60)).padStart(2, '0')} min` : `${Math.round(sec / 60)} min`)
+const hm = (sec) => {
+    const m = Math.round(sec / 60)
+    return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`
+}
 
 /** The simulated track: one entry per arrival at a waypoint, with the leg just driven. [{t, lon, lat, km, slope}] */
 function track(pr) {
@@ -124,7 +135,15 @@ module.exports = {
         { key: 'minSOC', label: 'Battery reserve', unit: '%', type: 'number', min: 10, max: 90, default: DEFAULTS.minSOC },
         { key: 'observeDurationMin', label: 'Observation per site', unit: 'min', type: 'number', min: 5, max: 240, default: DEFAULTS.observeDurationMin },
         { key: 'startAfterMin', label: 'Start after plan start', unit: 'min', type: 'number', min: 0, max: 1440, default: DEFAULTS.startAfterMin },
+        { key: 'driveWindow', label: 'Drive', type: 'enum', options: ['DAYLIGHT', 'ANY_TIME'], default: DEFAULTS.driveWindow },
     ],
+    // The tracked entity, declared: the generic layer reads its position track from these profiles.
+    tracked: [{ label: 'Rover', lat: R.lat, lon: R.lon, hold: 'step', note: 'Simulated rover.latitude/longitude, which change on arrival at each waypoint; position between waypoints is not modeled.' }],
+    /** A planner exception this adapter understands, as one line; anything else stays "Scheduling failed". */
+    explainError(cause) {
+        const m = /at most (\d+) sites, got (\d+)/.exec(cause ?? '')
+        return m ? `Too many sites: ${m[2]} (the planner takes at most ${m[1]})` : null
+    },
     // The adapter reads a plan's planned route from its directives, so a plan needs no simulation to be drawn.
     interpretsPlanOnly: true,
 
@@ -142,6 +161,7 @@ module.exports = {
                     minSOC: p.minSOC,
                     observeDuration: Math.round(p.observeDurationMin * MIN),
                     startAfter: Math.round(p.startAfterMin * MIN),
+                    driveWindow: p.driveWindow,
                 }
             },
         },
@@ -160,6 +180,7 @@ module.exports = {
                 minSOC: a.minSOC ?? DEFAULTS.minSOC,
                 observeDurationMin: a.observeDuration != null ? a.observeDuration / MIN : DEFAULTS.observeDurationMin,
                 startAfterMin: a.startAfter != null ? a.startAfter / MIN : DEFAULTS.startAfterMin,
+                driveWindow: a.driveWindow ?? DEFAULTS.driveWindow,
             },
         }
     },
@@ -173,9 +194,15 @@ module.exports = {
         const ds = dataset?.dataset_id
         // With a simulation: what it simulated (spans carry their arguments). Without: the plan's directives.
         const acts = ds != null
-            ? await ops.spans(ds, ['Drive', 'Observe'])
-            : (await ops.directives(plan.id, ['Drive', 'Observe'])).map((d) => ({ spanId: null, directiveId: d.id, type: d.type, startSec: d.startSec, endSec: null, arguments: d.arguments }))
-        const pr = ds != null ? await ops.profiles(ds, [R.lat, R.lon, R.odo, R.slope, R.status, R.terrain, R.soc, R.driveLoad, R.received]) : null
+            ? await ops.spans(ds, ['Drive', 'Observe', 'Wait'])
+            : (await ops.directives(plan.id, ['Drive', 'Observe', 'Wait'])).map((d) => ({ spanId: null, directiveId: d.id, type: d.type, startSec: d.startSec, endSec: null, arguments: d.arguments }))
+        const pr = ds != null ? await ops.profiles(ds, [R.lat, R.lon, R.odo, R.slope, R.status, R.terrain, R.soc, R.driveLoad, R.received, ...SUN]) : null
+        const sunKnown = !!pr?.[R.sun]?.length
+        const minSun = sunKnown ? valueAt(pr[R.minSun], 0) : null
+        const sunAt = (sec) => (sunKnown ? valueAt(pr[R.sun], sec) : null)
+        // Driving with the drive window closed: what the DriveDaylight constraint flags.
+        const dark = sunKnown ? intervalsWhere([[pr[R.status], (v) => v === 'DRIVING'], [pr[R.window], (v) => v === false]], 0, durationSec) : []
+        const darkIn = (a, b) => dark.reduce((n, [x, y]) => n + Math.max(0, Math.min(b, y) - Math.max(a, x)), 0)
         const legs = pr ? track(pr) : []
         const at = (sec) => (pr ? [valueAt(pr[R.lon], sec), valueAt(pr[R.lat], sec)] : null)
         const common = (s) => ({ spanId: s.spanId, directiveId: s.directiveId, activityType: s.type, startMs: ms(s.startSec), endMs: s.endSec != null ? ms(s.endSec) : null })
@@ -208,8 +235,13 @@ module.exports = {
                     ['Battery', `${(valueAt(pr[R.soc], s.startSec) ?? NaN).toFixed(0)} → ${(valueAt(pr[R.soc], s.endSec) ?? NaN).toFixed(0)} %`],
                     ['Steepest slope', `${maxSlope.toFixed(1)}°`],
                 )
+                const darkSec = darkIn(s.startSec, s.endSec)
+                if (sunKnown) {
+                    details.push(['Sun (geometric)', `${sunAt(s.startSec).toFixed(0)}° → ${sunAt(s.endSec - 1e-3).toFixed(0)}° elevation`])
+                    if (darkSec > 0) details.push(['Outside the drive window', `${hm(darkSec)} with the Sun below ${minSun}°`])
+                }
                 if (stopped) details.push(['Simulation', stopped])
-                rows.push({ spanId: s.spanId, directiveId: s.directiveId, to, start: iso(s.startSec), distanceKm: simKm, durationH: (s.endSec - s.startSec) / 3600, energyWh: wh, socAfter: valueAt(pr[R.soc], s.endSec), maxSlope })
+                rows.push({ spanId: s.spanId, directiveId: s.directiveId, to, start: iso(s.startSec), distanceKm: simKm, durationH: (s.endSec - s.startSec) / 3600, energyWh: wh, socAfter: valueAt(pr[R.soc], s.endSec), maxSlope, darkH: sunKnown ? darkSec / 3600 : null })
                 if (stopped) {
                     notes.push({ warn: true, text: `Drive to ${to} ${stopped}; it covered ${simKm.toFixed(2)} of ${plannedKm.toFixed(2)} km planned.` })
                     stoppedFor.set(to, `the drive heading for it ${stopped} (${simKm.toFixed(2)} of ${plannedKm.toFixed(2)} km)`)
@@ -227,6 +259,29 @@ module.exports = {
                     properties: { kind: 'drive', basis: 'simulated', primary: true, name, toSiteId: to, details, ...common(s) },
                     geometry: { type: 'LineString', coordinates: [at(s.startSec), ...driven.map((l) => [l.lon, l.lat])] },
                 })
+        }
+
+        // Waits: where the rover sat out a night or a recharge. Drawn at the simulated position, listed in the route.
+        for (const s of acts.filter((a) => a.type === 'Wait')) {
+            const why = s.arguments.reason || 'wait'
+            if (pr) {
+                rows.push({ spanId: s.spanId, directiveId: s.directiveId, to: `Wait: ${why}`, start: iso(s.startSec), distanceKm: 0, durationH: (s.endSec - s.startSec) / 3600, energyWh: 0, socAfter: valueAt(pr[R.soc], s.endSec), maxSlope: null, darkH: null, wait: true })
+                const [lon, lat] = at(s.startSec)
+                features.push({
+                    type: 'Feature',
+                    properties: {
+                        kind: 'wait', basis: 'simulated', primary: true, name: `Wait: ${why}`,
+                        details: [
+                            ['Why', why],
+                            ['Duration', hm(s.endSec - s.startSec)],
+                            ['Battery', `${(valueAt(pr[R.soc], s.startSec) ?? NaN).toFixed(0)} → ${(valueAt(pr[R.soc], s.endSec) ?? NaN).toFixed(0)} %`],
+                            ...(sunKnown ? [['Sun (geometric)', `${sunAt(s.startSec).toFixed(0)}° → ${sunAt(s.endSec - 1e-3).toFixed(0)}° elevation`]] : []),
+                        ],
+                        ...common(s),
+                    },
+                    geometry: { type: 'Point', coordinates: [lon, lat] },
+                })
+            }
         }
 
         const sites = new Map() // siteId → {name, priority, lon, lat}: sites the plan's Observe activities name
@@ -254,6 +309,7 @@ module.exports = {
                         ['Duration', hm(s.endSec - s.startSec)],
                         ['Data collected', `${gbit.toFixed(2)} Gbit`],
                         ['Battery', `${(valueAt(pr[R.soc], s.startSec) ?? NaN).toFixed(0)} → ${(valueAt(pr[R.soc], s.endSec) ?? NaN).toFixed(0)} %`],
+                        ...(sunKnown ? [['Sun (geometric)', `${sunAt(s.startSec).toFixed(0)}° elevation`]] : []),
                     ],
                     ...common(s),
                 },
@@ -287,6 +343,7 @@ module.exports = {
                 geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
             })
         }
+        rows.sort((a, b) => Date.parse(a.start) - Date.parse(b.start))
         // Drives name their destination by site id; say the site's name where it is known.
         const siteName = (id) => sites.get(id)?.name ?? id
         for (const r of rows) r.to = siteName(r.to)
@@ -298,7 +355,6 @@ module.exports = {
         for (const f of (given?.targets.features ?? []).filter((x) => x.geometry.type === 'Polygon'))
             features.unshift({ type: 'Feature', properties: { kind: 'avoid', basis: 'input', targetId: f.id, name: `${f.properties?.name ?? 'Region'} — avoided by the route` }, geometry: f.geometry })
 
-        let position = null
         if (pr) {
             const start = at(0)
             if (typeof start[0] === 'number') features.push({ type: 'Feature', properties: { kind: 'start', basis: 'simulated', name: 'Rover at plan start (simulated)' }, geometry: { type: 'Point', coordinates: start } })
@@ -311,13 +367,6 @@ module.exports = {
                     geometry: { type: 'Point', coordinates: [lon, lat] },
                 })
             }
-            position = {
-                label: 'Rover',
-                samples: legs.map((l) => [ms(l.t), l.lon, l.lat]),
-                hold: 'step',
-                note: 'Simulated rover.latitude/longitude, which change on arrival at each waypoint; position between waypoints is not modeled.',
-                trackWindowMs: null,
-            }
         } else if (acts.length) notes.push({ text: 'This plan has no simulation yet: the map shows the planned route from its Drive activities, and no simulated position or resources.' })
 
         // Which terrain grid informed the plan, the simulation, and this map.
@@ -327,9 +376,23 @@ module.exports = {
         if (others.length) notes.push({ warn: true, text: `Terrain mismatch: the map shows ${mine.id}, but the route was planned on ${[...plannedOn].join(', ') || '—'} and simulated on ${simulatedOn ?? '—'}.` })
         notes.push({ text: `Wide faint line: the planned route (Drive waypoints). Solid line: the simulated track. Terrain: ${mine.id}${plannedOn.size ? `, the grid the route was planned on${simulatedOn ? ' and simulated on' : ''}` : ''}.` })
 
+        if (sunKnown)
+            notes.push({ text: `Sun: geometric elevation at the rover above a smooth Mars ellipsoid (Mars24, checked against SPICE). Drive window: Sun at least ${minSun}° high, a mission rule. Shadows from nearby terrain are not modeled, so “Sun up” does not mean the rover is lit.` })
+        else if (pr) notes.push({ text: 'This simulation predates the rover’s Sun model: no solar elevation or drive window is recorded.' })
+
         return {
             features,
-            position,
+            // The rover's position track comes from `tracked` (generic); Solar context at the rover, from the simulation's own resources: [ms, elevation, window open, LTST h] at
+            // each change (every 10 min, and exactly where the window opens or closes).
+            sun: sunKnown
+                ? {
+                      minElevationDeg: minSun,
+                      marginMin: valueAt(pr[R.margin], 0),
+                      samples: [...new Set([...pr[R.sun], ...pr[R.window]].map((x) => x.t))].sort((a, b) => a - b).map((t) => [ms(t), +valueAt(pr[R.sun], t).toFixed(2), valueAt(pr[R.window], t), +(valueAt(pr[R.ltst], t) ?? NaN).toFixed(3)]),
+                      dark: dark.map(([a, b]) => [ms(a), ms(b)]),
+                      note: 'Geometric solar elevation at the simulated rover position (no terrain shadowing or atmosphere). The drive window is the mission rule: Sun at least the minimum elevation.',
+                  }
+                : null,
             overlays: [{ id: 'terrain', name: mine.name, datasetId: mine.id, url: 'api/plandev/missions/rover/data/terrain', usedByPlan: plannedOn.has(mine.id), usedBySimulation: simulatedOn === mine.id, source: mine.source, resolution: '200 m cells' }],
             table: {
                 columns: [
@@ -340,6 +403,7 @@ module.exports = {
                     { key: 'energyWh', label: 'Energy', unit: 'Wh', digits: 0, sum: true },
                     { key: 'socAfter', label: 'SOC after', unit: '%', digits: 0 },
                     { key: 'maxSlope', label: 'Max slope', unit: '°', digits: 1 },
+                    ...(sunKnown ? [{ key: 'darkH', label: 'Dark', unit: 'h', digits: 1, sum: true }] : []),
                 ],
                 rows,
             },
@@ -349,8 +413,9 @@ module.exports = {
 
     // `headline` metrics are the ones a comparison leads with; `better` says which direction is an improvement.
     async metrics({ ops, dataset, durationSec }) {
-        const pr = await ops.profiles(dataset.dataset_id, [R.lat, R.lon, R.odo, R.slope, R.soc, R.driveLoad, R.volume, R.maxVolume, R.received])
-        const [drives, observes] = await Promise.all(['Drive', 'Observe'].map((t) => ops.spans(dataset.dataset_id, [t])))
+        const pr = await ops.profiles(dataset.dataset_id, [R.lat, R.lon, R.odo, R.slope, R.soc, R.driveLoad, R.volume, R.maxVolume, R.received, R.status, R.window])
+        const [drives, observes, waits] = await Promise.all(['Drive', 'Observe', 'Wait'].map((t) => ops.spans(dataset.dataset_id, [t])))
+        const sunKnown = !!pr[R.window].length
         const legs = track(pr)
         const onSite = observes.filter((s) => {
             const a = s.arguments
@@ -366,6 +431,12 @@ module.exports = {
             { key: 'minSOC', name: 'Lowest battery', value: extremaOver(pr[R.soc], 0, durationSec).min, unit: '%', digits: 0, headline: true, better: 'high' },
             { key: 'steepKm', name: `Driven on slopes over ${STEEP_DEG}°`, value: legs.filter((l) => l.slope > STEEP_DEG).reduce((km, l) => km + l.km, 0), unit: 'km', digits: 1, headline: true, better: 'low' },
             { key: 'maxSlope', name: 'Steepest slope driven', value: Math.max(0, ...legs.map((l) => l.slope)), unit: '°', digits: 1, better: 'low' },
+            ...(sunKnown
+                ? [
+                      { key: 'darkDrive', name: 'Driving outside the drive window', value: intervalsWhere([[pr[R.status], (v) => v === 'DRIVING'], [pr[R.window], (v) => v === false]], 0, durationSec).reduce((n, [a, b]) => n + b - a, 0) / 3600, unit: 'h', digits: 1, headline: true, better: 'low' },
+                      { key: 'waitH', name: 'Waiting (nights, recharge)', value: waits.reduce((n, s) => n + s.endSec - s.startSec, 0) / 3600, unit: 'h', digits: 1 },
+                  ]
+                : []),
             { key: 'drives', name: 'Drive activities', value: drives.length, unit: '', digits: 0 },
             { key: 'data', name: 'Data collected', value: (valueAt(pr[R.received], durationSec) ?? NaN) / 1e9, unit: 'Gbit', digits: 2, better: 'high' },
             { key: 'peakStorage', name: 'Peak onboard storage', value: (100 * extremaOver(pr[R.volume], 0, durationSec).max) / (valueAt(pr[R.maxVolume], 0) || NaN), unit: '% full', digits: 0, better: 'low' },

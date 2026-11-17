@@ -97,15 +97,17 @@ const MISSIONS = {
 
 // Built the way a PlanDev user would, with nothing from MMGIS: the traverse goal in the scheduling
 // specification with the mission's own site catalog (sites left blank), and a hand-placed relay pass.
-const roverPlan = (name, objective, startTime = '2027-02-01T00:00:00Z') => ({
+const roverPlan = (name, objective, driveWindow, startTime = '2027-02-01T00:00:00Z') => ({
     name,
     startTime,
     duration: '96:00:00',
     activities: [{ name: 'Relay pass', type: 'Downlink', start_offset: '36:00:00', arguments: { duration: 900e6 } }],
-    goals: [{ name: 'ScheduleTraverse', arguments: { objective } }],
+    goals: [{ name: 'ScheduleTraverse', arguments: { objective, driveWindow } }],
 })
 MISSIONS.rover = {
-    model: { name: 'rover-mmgis', mission: 'Rover', jar: `${EX}/11-rover/build/libs/rover.jar` },
+    // Version 2: the Sun (MarsSun), a solar array that follows it, the drive window and Wait. The integration
+    // treats every version of a model name as one mission; plans of version 1 keep working read-only.
+    model: { name: 'rover-mmgis', version: '2', mission: 'Rover', jar: `${EX}/11-rover/build/libs/rover.jar` },
     goals: [
         {
             name: 'ScheduleTraverse',
@@ -118,21 +120,21 @@ MISSIONS.rover = {
         { name: 'MinBatterySOC (rover)', jar: `${EX}/04-hopper/constraints/build/libs/MinBatterySOC.jar`, arguments: { minSOC: 25 } },
         { name: 'OnboardStorageFull (rover)', jar: `${EX}/04-hopper/constraints/build/libs/OnboardStorageFull.jar`, arguments: { fractionFull: 0.99 } },
         { name: 'DriveSlopeLimit (rover)', jar: `${EX}/11-rover/constraints/build/libs/DriveSlopeLimit.jar`, arguments: { maxSlopeDeg: 15 } },
+        { name: 'DriveDaylight (rover)', jar: `${EX}/11-rover/constraints/build/libs/DriveDaylight.jar`, arguments: {} },
     ],
     plans: [
-        roverPlan('Jezero traverse (least energy)', 'MIN_ENERGY'),
-        roverPlan('Jezero traverse (shortest distance)', 'MIN_DISTANCE'),
-        // Same days as the MRO base plan, so the two plans' vehicles can be shown on one map and time cursor.
-        roverPlan('Jezero traverse (alongside the MRO plan)', 'MIN_ENERGY', '2024-01-02T00:00:00Z'),
+        // The same sites and objective; only the drive rule differs (see examples/11-rover/README.md).
+        roverPlan('Jezero daylight traverse', 'MIN_ENERGY', 'DAYLIGHT'),
+        roverPlan('Jezero traverse, driving at any hour', 'MIN_ENERGY', 'ANY_TIME'),
     ],
 }
 
 async function upsertModel(pd, m) {
-    const { mission_model: models } = await pd.gql(`query($n:String!){ mission_model(where:{name:{_eq:$n}}, order_by:{id:desc}){ id } }`, { n: m.name })
+    const { mission_model: models } = await pd.gql(`query($n:String!,$v:String!){ mission_model(where:{name:{_eq:$n}, version:{_eq:$v}}, order_by:{id:desc}){ id } }`, { n: m.name, v: m.version ?? '1' })
     if (models[0]) return models[0].id
     const fileId = await pd.uploadFile(fs.readFileSync(m.jar), path.basename(m.jar))
     const d = await pd.gql(`mutation($m:mission_model_insert_input!){ insert_mission_model_one(object:$m){ id } }`, {
-        m: { name: m.name, version: '1', mission: m.mission, definition_file_id: fileId },
+        m: { name: m.name, version: m.version ?? '1', mission: m.mission, definition_file_id: fileId },
     })
     const id = d.insert_mission_model_one.id
     console.log(`created model ${id}; waiting for activity types…`)

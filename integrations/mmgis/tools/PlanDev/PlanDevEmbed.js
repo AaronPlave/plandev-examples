@@ -12,9 +12,10 @@
 import { useSyncExternalStore } from 'react'
 import L_ from '@basics/Layers_/Layers_'
 import Map_ from '@basics/Map_/Map_'
+import useUIStore from '@basics/UserInterface_/store/uiStore'
 
 import { api, capLatLngs, coordsOf, entitiesOf, gridValueAt, sampleAt, setGridOverlay } from './PlanDevMap'
-import { pointInRing, positionAt, regionProblem, runStep, segmentHitsRing } from '../../lib/util'
+import { comparisonOutdated, counterpart as counterpartIn, pointInRing, positionAt, regionProblem, runStep, segmentHitsRing } from '../../lib/util'
 
 const PROTOCOL = 'plandev.embed.v1'
 const CLICK_PX = 12 // click within this many pixels of a position sample to move PlanDev's time cursor
@@ -34,12 +35,13 @@ export const S = {
     message: 'Waiting for PlanDev…',
     config: null, // the mission's parameters and target rules
     plans: [],
-    selected: null, // fid of the selected feature
+    selected: null, // fid of the selected feature of the open plan
+    selectedOther: null, // fid of the selected feature of the compared plan (never sent to PlanDev)
     focus: null, // { key, feature, plan: 'current' | 'compared' }: a constraint window highlighted on the map
     follow: false, // pan to keep the vehicle in view; off so the map can be explored freely
     chrome: false, // show the full MMGIS interface
     inspector: { open: false, tab: 'sites', width: 360 },
-    popover: null, // 'layers' | 'menu' | 'compare' | null
+    popover: null, // 'layers' | 'menu' | 'error' | null
     overlaysOn: {}, // overlay id → shown
     opacity: {}, // overlay id → 0..1
     hide: { current: false, other: false }, // routes hidden on the map
@@ -97,6 +99,11 @@ export function openPlanInPlanDev(planId) {
  */
 export function showSimulationInPlanDev(simulationDatasetId) {
     if (S.origin) send({ type: 'showSimulation', simulationDatasetId })
+}
+
+/** Ask PlanDev to expand this panel over its workspace (or restore its grid). PlanDev decides; the map stays the same map. */
+export function setExpanded(on) {
+    if (S.origin) send({ type: on ? 'expandPanel' : 'restorePanel' })
 }
 
 /** Move PlanDev's time cursor; with `endMs`, PlanDev also frames that window on its timeline. */
@@ -158,15 +165,20 @@ async function loadView(planId, simulationDatasetId, force) {
 }
 
 function refreshPlans() {
+    if (!S.view) return Promise.resolve(S.plans)
     return api(`api/plandev/missions/${S.view.mission.key}/plans`).then(
         (p) => {
             S.plans = p
+            // A comparison with a plan's latest simulation follows that plan's re-runs; one pinned to a
+            // simulation (sel.ds) stays as it is.
+            if (comparisonOutdated(S.other, p)) loadOther(compareSel(), true)
             emit()
             return p
         },
         () => S.plans,
     )
 }
+setInterval(() => S.origin && S.view && !S.run && refreshPlans(), 15000)
 
 /**
  * While a run started here is in flight, follow the plan's latest run and dataset (not the dataset
@@ -210,17 +222,19 @@ export function setCompare(sel) {
     loadOther(sel)
 }
 
-async function loadOther(sel) {
+async function loadOther(sel, force = false) {
     const same = (a, b) => a?.planId === b?.planId && (a?.ds ?? null) === (b?.ds ?? null)
     if (!sel || (sel.planId === S.view?.plan.id && sel.ds == null)) {
         S.other = null
+        S.selectedOther = null
         drawOther()
         return emit()
     }
-    if (same(S.other, sel) && S.other.view) return
+    if (!force && same(S.other, sel) && S.other.view) return
     try {
         const view = await api(`api/plandev/plans/${sel.planId}?${query({ mission: missionKey(), simulationDatasetId: sel.ds })}`)
         if (!same(compareSel(), sel)) return
+        if (!same(S.other, sel) || S.other?.view?.provenance.simulationDatasetId !== view.provenance.simulationDatasetId) S.selectedOther = null
         S.other = { planId: sel.planId, ds: sel.ds ?? null, view }
     } catch {
         S.other = null
@@ -315,25 +329,75 @@ function draw() {
 
 function restyle() {
     S.layer?.eachLayer((l) => {
-        l.setStyle(styleOf(l.feature, S.ctx.timeMs))
+        const st = styleOf(l.feature, S.ctx.timeMs)
+        l.setStyle(st)
+        // A hidden feature must not catch clicks meant for what is under it (e.g. the compared route).
+        l.getElement?.()?.style.setProperty('pointer-events', st.opacity === 0 ? 'none' : '')
         if (l.getTooltip()?.options.permanent) S.edit ? l.closeTooltip() : l.openTooltip()
     })
 }
 
-/** The compared plan's route, in another colour and not clickable: lines only, so it reads as "the other way". */
+// The compared plan's features worth inspecting on the map: its routes, sites, observations, waits, avoided
+// regions and constraint locations. Analysis and context geometry stay out, so the map does not double up.
+const COMPARED_KINDS = new Set(['site', 'observation', 'wait', 'avoid', 'violation', 'target', 'picture'])
+const isCompared = (f) => isRoute(f) || COMPARED_KINDS.has(f.properties.kind)
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+
+/** Hover text for a compared feature: which plan owns it, what it is, and its first details. */
+function otherTooltip(f) {
+    const p = f.properties
+    const v = S.other.view
+    const plan = S.other.ds ? `Compared: plan #${v.plan.id}, simulation ${S.other.ds}` : `Compared plan #${v.plan.id}`
+    const lines = (p.details || []).slice(0, 3).map(([k, x]) => `${esc(k)}: ${esc(x)}`)
+    return `<b style="color:${OTHER_COLOR}">${esc(plan)}</b><br>${esc(p.name.replace(/ — .*/, ''))}${lines.length ? `<br><span style="opacity:.8">${lines.join('<br>')}</span>` : ''}`
+}
+
+/** A compared feature's style: orange, planned versus simulated kept apart as on the open plan; white when selected. */
+function otherStyle(f) {
+    const p = f.properties
+    const st = { weight: 3, opacity: 0.95, fillOpacity: 0.25, ...p.style, color: OTHER_COLOR, fillColor: OTHER_COLOR }
+    if (p.basis === 'simulated' && /LineString/.test(f.geometry.type)) st.dashArray = '6 5'
+    if (p.basis === 'violation') Object.assign(st, { color: '#ff1744', dashArray: '2 6', weight: 4 })
+    if (p.fid === S.selectedOther) Object.assign(st, { color: '#ffffff', weight: st.weight + 2, opacity: 1 })
+    return st
+}
+
+/**
+ * The compared plan on the map: clickable, with tooltips naming the plan that owns each feature. Selecting
+ * one inspects it here and never selects anything in PlanDev, whose selection belongs to the open plan.
+ */
 function drawOther() {
     if (S.otherLayer) Map_.map.removeLayer(S.otherLayer)
     S.otherLayer = null
     if (!S.other || S.hide.other) return
     S.otherLayer = window.L.geoJSON(
-        { type: 'FeatureCollection', features: S.other.view.features.filter(isRoute) },
+        { type: 'FeatureCollection', features: S.other.view.features.filter(isCompared) },
         {
-            interactive: false,
-            style: (f) => ({ weight: 3, opacity: 0.95, ...f.properties.style, color: OTHER_COLOR, ...(f.properties.basis === 'simulated' && { dashArray: '6 5' }) }),
+            style: otherStyle,
+            pointToLayer: (f, ll) => window.L.circleMarker(ll, { radius: f.properties.kind === 'site' ? 6 : 4 }),
+            onEachFeature: (f, l) => {
+                l.bindTooltip(() => otherTooltip(f), { sticky: true })
+                l.on('click', (e) => {
+                    window.L.DomEvent.stopPropagation(e)
+                    if (!S.edit) selectOther(f)
+                })
+            },
         },
     ).addTo(Map_.map)
     S.layer?.bringToFront()
 }
+
+/** Inspect a feature of the compared plan (the open plan's selection is left alone). */
+export function selectOther(f, { pan = false } = {}) {
+    S.selectedOther = f?.properties.fid ?? null
+    S.otherLayer?.eachLayer((l) => l.setStyle(otherStyle(l.feature)))
+    if (f && pan) reveal(f.geometry)
+    emit()
+}
+
+/** The open or compared plan's feature for the same site or destination (lib/util counterpart). */
+export const counterpart = (f, view) => counterpartIn(f, view)
 
 export function setHidden(which, hidden) {
     S.hide[which] = hidden
@@ -427,6 +491,22 @@ function applyTime() {
     for (const m of S.markers.splice(tracks.length)) for (const l of [m.marker, m.window, m.cap]) if (l) Map_.map.removeLayer(l)
 }
 
+/**
+ * The Sun at the vehicle at the cursor, from the plan's simulated solar resources (view.sun): elevation,
+ * whether the drive window is open, and when that next changes. Null without solar data or outside it.
+ */
+export function sunNow(view = S.view, t = S.ctx.timeMs) {
+    const sun = view?.sun
+    if (!sun?.samples.length || t == null) return null
+    const s = sun.samples
+    if (t < s[0][0] || t > Date.parse(view.plan.startTime) + view.plan.durationSec * 1000) return null
+    let k = 0
+    while (k + 1 < s.length && s[k + 1][0] <= t) k++
+    const [, elev, open, ltst] = s[k]
+    const flip = s.slice(k + 1).find((x) => x[2] !== open)
+    return { elev, open, ltst, min: sun.minElevationDeg, next: flip ? flip[0] - t : null, dark: (sun.dark || []).some(([a, b]) => t >= a && t < b) }
+}
+
 export function setFollow(on) {
     S.follow = on
     applyTime()
@@ -464,6 +544,7 @@ function applySelection(force) {
 /** Select a feature of the open plan: on the map, and its activity and start time in PlanDev. */
 export function selectFeature(f, { pan = false } = {}) {
     const p = f.properties
+    if (S.selectedOther != null) selectOther(null)
     S.selected = p.fid
     restyle()
     emit()
@@ -483,6 +564,7 @@ export function selectSpan(spanId, directiveId, startMs) {
 
 export function clearSelection() {
     S.selected = null
+    if (S.selectedOther != null) selectOther(null)
     restyle()
     emit()
 }
@@ -757,6 +839,12 @@ function startRegion() {
 
 function onKey(e) {
     const ed = S.edit
+    // Escape is PlanDev's "restore the grid"; inside this frame PlanDev cannot hear it, so pass it on.
+    if (!ed && e.key === 'Escape' && !/input|select|textarea/i.test(e.target.tagName)) {
+        if (S.popover) ((S.popover = null), emit())
+        else if (S.ctx.expanded) setExpanded(false)
+        return
+    }
     if (!ed || /input|select|textarea/i.test(e.target.tagName)) return
     const drawing = Map_.map.editTools?.drawing()
     if (e.key === 'Escape') {
@@ -880,7 +968,29 @@ export async function keep() {
 
 // ---------- wiring ----------
 
+let layoutBefore = null
+/**
+ * Embedded, MMGIS is a map only: its Viewer and Globe screens are closed and their splitters removed
+ * through MMGIS's own layout state, not hidden. The full interface brings them back as they were.
+ */
+function mapOnly(on) {
+    const ui = useUIStore.getState()
+    if (on && !layoutBefore) {
+        layoutBefore = { pp: ui.getPanelPercents(), hasViewer: ui.hasViewer, hasGlobe: ui.hasGlobe }
+        ui.setPanelPercents(0, 100, 0)
+        ui.setHasViewer(false)
+        ui.setHasGlobe(false)
+    } else if (!on && layoutBefore) {
+        const b = layoutBefore
+        layoutBefore = null
+        ui.setHasViewer(b.hasViewer)
+        ui.setHasGlobe(b.hasGlobe)
+        ui.setPanelPercents(b.pp.viewer, b.pp.map, b.pp.globe)
+    }
+}
+
 export function applyChrome() {
+    mapOnly(!S.chrome)
     document.body.classList.toggle('plandevEmbedded', !S.chrome)
     // Shift-click pins terrain samples here, so shift-drag box zoom is MMGIS's only with its full interface.
     Map_.map.boxZoom[S.chrome ? 'enable' : 'disable']()

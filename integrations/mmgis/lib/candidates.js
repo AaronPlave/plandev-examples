@@ -11,7 +11,7 @@
 // working branch. This module keeps only in-flight promises, run errors, and a cache of dataset reads.
 'use strict'
 const { sleep } = require('./plandev')
-const { intervalToSec, checkParams, normalizeTargets } = require('./util')
+const { intervalToSec, checkParams, normalizeTargets, positionFromProfiles, runFailure } = require('./util')
 
 const PROFILE_CACHE_MAX = 200 // ponytail: FIFO by (dataset, resource); a real LRU if many datasets are browsed
 
@@ -54,9 +54,15 @@ function createCandidates(pd, missions) {
         return d.plan_by_pk
     }
 
-    async function modelOf(m) {
-        m.modelId ??= (await plan(m.basePlanId)).model_id
-        return m.modelId
+    /** The mission's model ids: every version of the base plan's model (by name), so a new model version keeps older plans readable. */
+    async function modelsOf(m) {
+        if (!m.modelIds) {
+            const d = await pd.gql(`query($id:Int!){ plan_by_pk(id:$id){ mission_model{ name } } }`, { id: m.basePlanId })
+            const name = d.plan_by_pk?.mission_model.name
+            if (!name) throw new Error(`base plan ${m.basePlanId} not found`)
+            m.modelIds = (await pd.gql(`query($n:String!){ mission_model(where:{name:{_eq:$n}}){ id } }`, { n: name })).mission_model.map((x) => x.id)
+        }
+        return m.modelIds
     }
 
     /**
@@ -65,7 +71,7 @@ function createCandidates(pd, missions) {
      */
     async function missionForPlan(p, expectKey = null) {
         for (const m of missions) {
-            if ((await modelOf(m)) !== p.model_id) continue
+            if (!(await modelsOf(m)).includes(p.model_id)) continue
             if (expectKey && m.adapter.key !== expectKey) throw new Error(`plan ${p.id} is a ${m.adapter.key} plan, not ${expectKey}`)
             return m
         }
@@ -152,9 +158,12 @@ function createCandidates(pd, missions) {
         runErrors.delete(planId)
         const state = { phase: 'scheduling' }
         state.promise = scheduleAndSimulate(planId, (phase) => (state.phase = phase))
-            .catch((e) => {
-                runErrors.set(planId, e.message)
-                console.error(`[plandev] plan ${planId}: ${e.message}`)
+            .catch(async (e) => {
+                // { summary: one short line for a status chip, detail: the raw reason, for debugging }
+                const f = e.failure ?? runFailure('run', e.message)
+                const m = await plan(planId).then((p) => missionForPlan(p)).catch(() => null)
+                runErrors.set(planId, { summary: m?.adapter.explainError?.(f.cause) ?? f.summary, detail: f.detail, stage: f.stage, at: new Date().toISOString() })
+                console.error(`[plandev] plan ${planId}: ${f.summary}`)
             })
             .finally(() => inflight.delete(planId))
         inflight.set(planId, state)
@@ -226,10 +235,16 @@ function createCandidates(pd, missions) {
             async () => (await pd.gql(`query($a:Int!){ scheduling_request(where:{analysis_id:{_eq:$a}}){ status reason } }`, { a: analysisId })).scheduling_request[0],
             (r) => r && ['success', 'failed'].includes(r.status),
         )
-        if (req.status !== 'success') throw new Error(`scheduling failed${req.reason ? `: ${JSON.stringify(req.reason).slice(0, 300)}` : ''}`)
+        if (req.status !== 'success') {
+            const f = runFailure('scheduling', req.reason)
+            throw Object.assign(new Error(f.summary), { failure: f })
+        }
         onPhase('simulating')
         const sim = await pd.gql(`query($p:Int!){ simulate(planId:$p, force:true){ simulationDatasetId status reason } }`, { p: planId })
-        if (sim.simulate.status === 'failed') throw new Error(`simulate: ${JSON.stringify(sim.simulate.reason).slice(0, 300)}`)
+        if (sim.simulate.status === 'failed') {
+            const f = runFailure('simulation', sim.simulate.reason)
+            throw Object.assign(new Error(f.summary), { failure: f })
+        }
         await waitFor(
             async () => (await pd.gql(`query($id:Int!){ simulation_dataset_by_pk(id:$id){ status } }`, { id: sim.simulate.simulationDatasetId })).simulation_dataset_by_pk,
             (d) => d && ['success', 'failed'].includes(d.status),
@@ -242,9 +257,9 @@ function createCandidates(pd, missions) {
      */
     async function plans(missionKey) {
         const d = await pd.gql(
-            `query($m:Int!){ plan(where:{model_id:{_eq:$m}}, order_by:{id:asc}){ id name parent_id revision owner updated_at tags{ tag{ name } }
+            `query($m:[Int!]!){ plan(where:{model_id:{_in:$m}}, order_by:{id:asc}){ id name parent_id revision owner updated_at tags{ tag{ name } }
                simulations{ simulation_datasets(order_by:{id:desc}, limit:1){ id status plan_revision } } } }`,
-            { m: await modelOf(byKey(missionKey)) },
+            { m: await modelsOf(byKey(missionKey)) },
         )
         return d.plan.map(({ tags, simulations, ...p }) => {
             const ds = simulations[0]?.simulation_datasets[0] || null
@@ -253,7 +268,7 @@ function createCandidates(pd, missions) {
                 exploring: isExploring({ tags }),
                 running: inflight.has(p.id),
                 phase: inflight.get(p.id)?.phase ?? null,
-                error: runErrors.get(p.id) ?? null,
+                error: runErrors.get(p.id)?.summary ?? null,
                 latest: ds && { simulationDatasetId: ds.id, status: ds.status, planRevision: ds.plan_revision, stale: ds.plan_revision !== p.revision },
             }
         })
@@ -437,6 +452,8 @@ function createCandidates(pd, missions) {
             // Spec-goal arguments are not versioned with the plan; flag edits made after the last scheduling run.
             inputsEditedSinceScheduling: scheduling ? scheduling.specification_revision !== p.scheduling_specification.revision : null,
             simulation: dataset,
+            // The last run started from the map failed: what to say about it, and the raw reason.
+            runError: runErrors.get(p.id) ?? null,
             // The goals' current arguments, to start an edit from; inputsCurrent says whether they produced this dataset.
             inputs: anyArgs ? a.inputsFromGoalArguments(goalArgs) : null,
             inputsCurrent,
@@ -454,6 +471,15 @@ function createCandidates(pd, missions) {
         if (dataset?.status !== 'success' && a.interpretsPlanOnly) Object.assign(out, await a.interpret({ ...ctx, dataset: null }))
         if (dataset?.status === 'success') {
             Object.assign(out, await a.interpret(ctx))
+            // Declared tracked entities (adapter.tracked): position tracks read from the dataset's profiles, so
+            // an adapter need not build them itself. Its own `position`, if any, wins.
+            if (!out.position && !out.positions && a.tracked?.length) {
+                const tracks = []
+                for (const tr of a.tracked) tracks.push(positionFromProfiles(await ops.profiles(dataset.dataset_id, [tr.lat, tr.lon]), tr, ctx.startMs, a.conventions))
+                const shown = tracks.filter((x) => x.samples.length)
+                if (shown.length === 1) out.position = shown[0]
+                else if (shown.length) out.positions = shown
+            }
             if (stale)
                 out.notes.unshift({
                     warn: true,
@@ -479,7 +505,7 @@ function createCandidates(pd, missions) {
             }
             out.summary = metrics
             out.constraints = await constraints(p.id, dataset.id, ctx.startMs).catch((e) => [{ name: 'constraint check', success: false, windows: [], errors: [e.message] }])
-            out.features.push(...violationFeatures(out.constraints, out.position))
+            out.features.push(...violationFeatures(out.constraints, out.position ?? out.positions?.[0]))
         }
         // The time a position track is valid over: the simulated plan, not "any time after its last sample".
         const endMs = ctx.startMs + ctx.durationSec * 1000
@@ -521,7 +547,7 @@ function createCandidates(pd, missions) {
     }
 
     function status(planId, scheduling, dataset, stale) {
-        if (runErrors.has(planId)) return `failed: ${runErrors.get(planId)}`
+        if (runErrors.has(planId)) return 'run failed'
         // While this process drives a candidate, the scheduler's own simulation datasets can appear and
         // finish first; only the dataset requested after scheduling counts, so report running until then.
         if (inflight.has(planId)) return 'running'

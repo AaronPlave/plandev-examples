@@ -184,3 +184,18 @@ body.plandevEmbedded .leaflet-top.leaflet-left { top: 62px; }
 .pe_params input, .pe_params select { width: 100%; }
 .pe_answer { border: 1px solid #ffea00; border-radius: 3px; padding: 4px 6px; }
 .pe_back { position: fixed; right: 10px; bottom: 30px; z-index: 3000; background: #00b8d4; color: #000 !important; border: 0; border-radius: 4px; padding: 5px 10px; font-weight: 600; }
+
+/* Bounded run status: one line, details on demand. */
+.pe_chip { max-width: min(46cqw, 260px); min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.pe_chip .pe_ellip { min-width: 0; }
+.pe_click { cursor: pointer; }
+.pe_error { width: min(420px, calc(100cqw - 16px)); left: auto; white-space: normal; display: flex; flex-direction: column; gap: 6px; }
+.pe_pre { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; font: 10.5px ui-monospace, monospace; background: rgba(255,255,255,0.06); padding: 6px; border-radius: 4px; margin: 4px 0 0; }
+/* The Sun at the rover */
+.pe_sun { flex: none; padding: 0 5px; border-radius: 6px; }
+.pe_sun.open { color: #ffe082; } .pe_sun.shut { color: #9fa8da; } .pe_sun.dark { color: #ff6e6e; font-weight: 600; }
+@container (max-width: 520px) { .pe_sun { display: none; } }
+/* Selection of the compared plan's features */
+.pe_sel_other { border-left: 3px solid #ff9100; }
+.pe_owner { color: #ffb74d; margin: 1px 0 2px; }
+.pe_cp { margin-top: 5px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.12); }

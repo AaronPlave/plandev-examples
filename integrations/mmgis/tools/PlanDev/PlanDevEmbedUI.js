@@ -10,9 +10,9 @@ import React, { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import {
-    COLOR, OTHER_COLOR, S, applyChrome, applyInspector, checkAgainstPlan, clearSelection, compareSel, dismissRun, editFeedback, editInputs, emit, focusWindow,
-    gridInfo, keep, openPlanInPlanDev, positionsNow, removePin, replan, selectEditItem, selectFeature, selectSpan, setCompare, setFollow, setHidden, setTool,
-    startEdit, stopEdit, syncOverlays, useS,
+    COLOR, OTHER_COLOR, S, applyChrome, applyInspector, checkAgainstPlan, clearSelection, compareSel, counterpart, dismissRun, editFeedback, editInputs, emit, focusWindow,
+    gridInfo, keep, openPlanInPlanDev, positionsNow, removePin, replan, selectEditItem, selectFeature, selectOther, selectSpan, setCompare, setExpanded, setTime, setFollow, setHidden, setTool,
+    startEdit, stopEdit, sunNow, syncOverlays, useS,
 } from './PlanDevEmbed'
 
 // ---------- formatting ----------
@@ -47,7 +47,7 @@ function runLabel(view) {
     if (r.phase === 'scheduling') return { cls: 'run', text: 'Scheduling…' }
     if (r.phase === 'simulating') return { cls: 'run', text: 'Simulating…' }
     if (r.phase === 'complete') return { cls: 'ok', text: `New simulation ${r.simulationDatasetId ?? ''}`, title: 'The run finished; PlanDev shows its simulation' }
-    return { cls: 'bad', text: 'Run failed', title: r.message, dismiss: true }
+    return { cls: 'bad', text: r.message || 'Run failed', title: 'The last run failed: click for details', dismiss: true, error: true }
 }
 
 function simLabel(view) {
@@ -56,6 +56,7 @@ function simLabel(view) {
     const ids = `Plan #${view.plan.id} rev ${view.provenance.planRevision} · simulation ${ds ?? '—'}${view.provenance.simulatedPlanRevision != null ? ` (of rev ${view.provenance.simulatedPlanRevision})` : ''}`
     if (view.status === 'running') return { cls: 'run', text: 'Running in PlanDev…', title: ids }
     if (view.status === 'not simulated') return { cls: 'muted', text: 'Planned only', title: `${ids}\nNot simulated: the map shows the planned route only.` }
+    if (view.status === 'run failed') return { cls: 'bad', text: view.runError?.summary || 'Run failed', title: `${ids}\nThe last run failed: click for details`, error: true }
     if (/failed/.test(view.status)) return { cls: 'bad', text: view.status, title: ids }
     if (view.stale) return { cls: 'warn', text: `Sim of rev ${view.provenance.simulatedPlanRevision}`, title: `${ids}\nThis simulation is of an earlier plan revision; re-simulate in PlanDev for the current plan.` }
     if (latest != null && ds !== latest) return { cls: 'warn', text: `Earlier sim ${ds}`, title: `${ids}\nPlanDev shows an earlier simulation; the latest is ${latest}.` }
@@ -78,7 +79,10 @@ function PlanBar() {
                 <b className='pe_name' title={`${view.plan.name}\n#${view.plan.id}`}>{shortName(view.plan.name)}</b>
                 {view.exploring ? <span className='pe_badge' title='A working branch: an ordinary PlanDev plan that re-planning from the map changes in place'>alternative</span>
                     : view.plan.parentId != null ? <span className='pe_badge plain'>{`from #${view.plan.parentId}`}</span> : null}
-                <span className={`pe_chip ${st.cls}`} title={st.title}>{st.text}{st.dismiss && <button className='pe_x' onClick={dismissRun}>×</button>}</span>
+                <span className={`pe_chip ${st.cls} ${st.error ? 'pe_click' : ''}`} title={st.title} onClick={st.error ? () => ((S.popover = close('error')), emit()) : undefined}>
+                    <span className='pe_ellip'>{st.error ? '⚠ ' : ''}{st.text}</span>
+                    {st.dismiss && <button className='pe_x' title='Dismiss' onClick={(e) => { e.stopPropagation(); dismissRun() }}>×</button>}
+                </span>
                 <span className='pe_grow' />
                 {view.constraints?.length > 0 && (
                     <button className={`pe_icon ${n ? 'bad' : 'ok'}`} title={n ? `${n} constraint violation${n === 1 ? '' : 's'}: show them` : 'No constraint violations'} onClick={() => go('constraints')}>
@@ -88,6 +92,7 @@ function PlanBar() {
                 <button className={`pe_icon ${S.popover === 'layers' ? 'on' : ''}`} title='Layers: terrain, routes' onClick={() => ((S.popover = close('layers')), emit())}>◧</button>
                 {S.config && !S.edit && <button className='pe_icon' disabled={!!runLabel(view) && runLabel(view).cls === 'run'} title={view.exploring ? 'Change sites or avoid regions, then re-plan this alternative' : 'Change sites or avoid regions, then plan an alternative'} onClick={startEdit}>✎<span className='pe_lbl'> Edit</span></button>}
                 <button className={`pe_icon ${S.inspector.open ? 'on' : ''}`} title='Details: sites, route, metrics, constraints, comparison' onClick={() => { S.inspector = { ...S.inspector, open: !S.inspector.open }; applyInspector(); emit() }}>☰</button>
+                <button className={`pe_icon ${S.ctx.expanded ? 'on' : ''}`} title={S.ctx.expanded ? 'Restore PlanDev’s layout (Esc)' : 'Expand the map over PlanDev’s workspace'} onClick={() => setExpanded(!S.ctx.expanded)}>{S.ctx.expanded ? '⤡' : '⤢'}</button>
                 <button className={`pe_icon ${S.popover === 'menu' ? 'on' : ''}`} title='More' onClick={() => ((S.popover = close('menu')), emit())}>⋯</button>
             </div>
             <div className='pe_bar2'>
@@ -99,6 +104,7 @@ function PlanBar() {
                     </span>
                 ))}
                 {now && <span className='pe_now' title='In progress at the time cursor'>· {now.properties.name.replace(/ — .*/, '')}</span>}
+                <SunNow />
                 <span className='pe_grow' />
                 {sel && S.other && (
                     <span className='pe_vs' title={S.other.view.plan.name}>
@@ -110,6 +116,46 @@ function PlanBar() {
             </div>
             {S.popover === 'layers' && <Layers />}
             {S.popover === 'menu' && <Menu />}
+            {S.popover === 'error' && (st.error ? <RunError /> : null)}
+        </div>
+    )
+}
+
+/** Where the Sun is for the vehicle at the cursor, and whether the mission's drive window is open. */
+function SunNow() {
+    const s = sunNow()
+    if (!s) return null
+    const until = s.next != null ? `${s.open ? 'closes' : 'opens'} in ${dur(s.next)}` : ''
+    return (
+        <span className={`pe_sun ${s.open ? 'open' : 'shut'} ${s.dark ? 'dark' : ''}`}
+            title={`Geometric solar elevation at the rover (no terrain shadowing): ${s.elev.toFixed(1)}°. Local true solar time ${hhmm(s.ltst)}.\nDrive window (mission rule): Sun at least ${s.min}°${until ? `; ${until}` : ''}.${s.dark ? '\nThe rover is driving with the window closed (DriveDaylight).' : ''}`}>
+            {s.elev >= 0 ? '☀' : '☾'} {(Math.trunc(s.elev * 10) / 10).toFixed(Math.abs(s.elev - s.min) < 1 ? 1 : 0)}° · {s.open ? 'drive window open' : 'no driving'}{until ? ` · ${until}` : ''}{s.dark ? ' · driving in the dark' : ''}
+        </span>
+    )
+}
+const hhmm = (h) => `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`
+
+/** A failed run: what failed, what the map is still showing, and the raw reason for debugging. */
+function RunError() {
+    const view = S.view
+    const e = view.runError
+    const r = S.runState?.planId === view.plan.id ? S.runState : null
+    const ds = view.provenance.simulationDatasetId
+    return (
+        <div className='pe_pop pe_error'>
+            <div className='pe_bad'><b>{r?.message || e?.summary || 'Run failed'}</b></div>
+            <div className='pe_small'>
+                {ds != null
+                    ? `The map still shows simulation ${ds} (plan revision ${view.provenance.simulatedPlanRevision}), from before this run. It does not reflect the inputs that failed.`
+                    : 'Nothing was simulated from the inputs that failed.'}
+            </div>
+            {e?.detail ? (
+                <details>
+                    <summary className='pe_muted pe_small'>Technical details{e.at ? ` · ${fmtShort(Date.parse(e.at))} UTC` : ''}</summary>
+                    <pre className='pe_pre'>{e.detail}</pre>
+                </details>
+            ) : <div className='pe_muted pe_small'>Details are in the MMGIS server log.</div>}
+            <div className='pe_row'><span className='pe_grow' /><button onClick={() => { dismissRun(); S.popover = null; emit() }}>Dismiss</button></div>
         </div>
     )
 }
@@ -165,10 +211,10 @@ function Layers() {
             ))}
             <div className='pe_layer'>
                 <label><input type='checkbox' checked={!S.hide.current} onChange={(e) => setHidden('current', !e.target.checked)} /> <span className='pe_swatch' style={{ background: COLOR }} /> Current plan route</label>
-                {S.other && <label><input type='checkbox' checked={!S.hide.other} onChange={(e) => setHidden('other', !e.target.checked)} /> <span className='pe_swatch' style={{ background: OTHER_COLOR }} /> Compared route</label>}
+                {S.other && <label><input type='checkbox' checked={!S.hide.other} onChange={(e) => setHidden('other', !e.target.checked)} /> <span className='pe_swatch' style={{ background: OTHER_COLOR }} /> Compared plan #{S.other.view.plan.id}</label>}
                 <label title='Pan to keep the vehicle in view as the time cursor moves'><input type='checkbox' checked={S.follow} onChange={(e) => setFollow(e.target.checked)} /> Follow the vehicle</label>
             </div>
-            <div className='pe_muted pe_small'>Wide faint line: planned route · solid: simulated track · red: constraint windows</div>
+            <div className='pe_muted pe_small'>Wide faint line: planned route · solid: simulated track (dashed for the compared plan) · red: constraint windows</div>
         </div>
     )
 }
@@ -218,8 +264,63 @@ function windowsOf(view, which) {
     return out
 }
 
+/** A compact view of a feature's details: its first rows. */
+const Details = ({ f, n = 99 }) => (f.properties.details || []).slice(0, n).map(([k, v]) => (
+    <div key={k} className='pe_kv'><span>{k}</span><span>{v}</span></div>
+))
+
+/** The same site or destination in the other plan, if there is one (matched by id only). */
+function Counterpart({ f, view, label, color }) {
+    const c = counterpart(f, view)
+    if (c === undefined) return null
+    return (
+        <div className='pe_cp'>
+            <div className='pe_small'><span className='pe_swatch' style={{ background: color }} /> {label}:</div>
+            {c ? (
+                <>
+                    {c.properties.outcome && <div className='pe_small'><span className={`pe_state ${c.properties.outcome.state}`}>{c.properties.outcome.label}</span></div>}
+                    {!c.properties.outcome && <Details f={c} n={4} />}
+                </>
+            ) : <div className='pe_muted pe_small'>not in that plan</div>}
+        </div>
+    )
+}
+
+/** A feature of the compared plan: inspected here; PlanDev's selection stays with the open plan. */
+function SelectedOther() {
+    const o = S.other
+    const f = o.view.features.find((x) => x.properties.fid === S.selectedOther)
+    if (!f) return null
+    const p = f.properties
+    return (
+        <div className='pe_sel pe_sel_other'>
+            <div className='pe_title'>
+                <span className='pe_swatch' style={{ background: OTHER_COLOR }} />
+                <span className='pe_ellip'>{p.name.replace(/ — .*/, '')}</span>
+                <button className='pe_x' title='Clear selection' onClick={() => selectOther(null)}>×</button>
+            </div>
+            <div className='pe_owner pe_small' title={o.view.plan.name}>
+                Compared plan #{o.view.plan.id} {shortName(o.view.plan.name)} · sim {o.view.provenance.simulationDatasetId ?? '—'}{o.ds ? ' (pinned earlier simulation)' : ''}
+            </div>
+            <div className='pe_muted pe_small'>
+                {p.basis}{Number.isFinite(p.startMs) && ` · ${p.endMs != null && p.endMs !== p.startMs ? fmtRange(p.startMs, p.endMs) : fmtShort(p.startMs)} UTC`}
+            </div>
+            {p.outcome && <div className='pe_small'><span className={`pe_state ${p.outcome.state}`}>{p.outcome.label}</span>{p.outcome.reason ? <span className='pe_muted'> · {p.outcome.reason}</span> : ''}</div>}
+            <Details f={f} />
+            <Counterpart f={f} view={S.view} label={`In the open plan #${S.view.plan.id}`} color={COLOR} />
+            {Number.isFinite(p.startMs) && (
+                <button className='pe_link pe_small' title='Time is shared between plans: this moves the cursor, not the selection' onClick={() => setTime(p.startMs, p.endMs != null && p.endMs > p.startMs ? p.endMs : undefined)}>
+                    Show {fmtShort(p.startMs)} on PlanDev’s timeline →
+                </button>
+            )}
+            {o.planId !== S.view.plan.id && <button className='pe_link pe_small' onClick={() => openPlanInPlanDev(o.planId)}>Open plan #{o.planId} in PlanDev (timeline, resources) →</button>}
+        </div>
+    )
+}
+
 function Selected() {
     const view = S.view
+    if (S.selectedOther != null && S.other) return <SelectedOther />
     const f = view.features.find((x) => x.properties.fid === S.selected)
     if (!f) return null
     const p = f.properties
@@ -240,6 +341,7 @@ function Selected() {
                     <span>{v}</span>
                 </div>
             ))}
+            {S.other && <Counterpart f={f} view={S.other.view} label={`In compared plan #${S.other.view.plan.id}`} color={OTHER_COLOR} />}
             {(p.observations || []).map((o) => (
                 <button key={o.spanId ?? o.directiveId} className='pe_link pe_small' onClick={() => selectSpan(o.spanId, o.directiveId, o.startMs)}>
                     Observation at {fmtShort(o.startMs)} →
@@ -445,7 +547,7 @@ function Compare() {
                 <div>
                     <span className='pe_swatch' style={{ background: OTHER_COLOR }} /> <b>Compared</b>{' '}
                     <button className='pe_pick' onClick={() => setChoosing(!choosing)} title={o?.plan.name}>{o ? label(o, S.other.ds) : sel ? 'loading…' : 'choose a plan…'} ▾</button>
-                    {o && <span className='pe_muted pe_small'>sim {o.provenance.simulationDatasetId ?? '—'}{o.plan.id === view.plan.parentId ? ' · source' : ''}</span>}
+                    {o && <span className='pe_muted pe_small' title={S.other.ds ? 'This earlier simulation stays as chosen' : 'Follows the plan: a new simulation of it replaces this one here'}>sim {o.provenance.simulationDatasetId ?? '—'}{S.other.ds ? ' · pinned, historical' : ' · its latest'}{o.plan.id === view.plan.parentId ? ' · source' : ''}</span>}
                 </div>
             </div>
             {choosing && <CompareChooser onClose={() => setChoosing(false)} />}
@@ -489,6 +591,7 @@ function Compare() {
                             </tbody>
                         </table>
                     )}
+                    <div className='pe_muted pe_small'>Click the compared plan’s routes, sites and stops on the map to inspect them; they stay the compared plan’s, and PlanDev’s selection is unchanged.</div>
                     <div className='pe_muted pe_small'>Δ is current minus compared (pp: percentage points). It does not judge which is better: weigh the trade-offs. Each plan’s violation windows are listed under Constraints.</div>
                 </>
             )}

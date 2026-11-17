@@ -69,3 +69,25 @@ test('site outcomes distinguish requested, scheduled, reached and observed', () 
     assert.equal(siteOutcome({ ...base, scheduled: false }).state, 'unscheduled')
     assert.equal(siteOutcome({ ...base, requested: null, scheduled: false }).state, 'unknown')
 })
+
+test('a compared feature is matched to the open plan only by site or destination id', () => {
+    const { counterpart } = require('../lib/util')
+    const F = (kind, props) => ({ properties: { kind, ...props } })
+    const open = { features: [F('site', { targetId: 'rim', outcome: { state: 'observed' } }), F('route', { toSiteId: 'rim' }), F('drive', { toSiteId: 'rim', primary: true }), F('observation', { siteId: 'rim' })] }
+    assert.strictEqual(counterpart(F('site', { targetId: 'rim' }), open), open.features[0])
+    assert.strictEqual(counterpart(F('drive', { toSiteId: 'rim' }), open), open.features[2]) // the simulated drive, not the planned band
+    assert.strictEqual(counterpart(F('route', { toSiteId: 'rim' }), open), open.features[1])
+    assert.strictEqual(counterpart(F('site', { targetId: 'delta' }), open), null) // a site the open plan lacks: "not in that plan"
+    assert.strictEqual(counterpart(F('violation', {}), open), undefined) // nothing to match a violation window by: no claim either way
+    assert.strictEqual(counterpart(F('wait', { name: 'Wait: night' }), open), undefined)
+})
+
+test('a comparison with a plan follows its re-runs; a pinned earlier simulation stays', () => {
+    const { comparisonOutdated } = require('../lib/util')
+    const view = { provenance: { simulationDatasetId: 10 } }
+    const plans = [{ id: 7, latest: { simulationDatasetId: 12, status: 'success' } }]
+    assert.strictEqual(comparisonOutdated({ planId: 7, ds: null, view }, plans), true)
+    assert.strictEqual(comparisonOutdated({ planId: 7, ds: 10, view }, plans), false) // pinned
+    assert.strictEqual(comparisonOutdated({ planId: 7, ds: null, view }, [{ id: 7, latest: { simulationDatasetId: 12, status: 'incomplete' } }]), false) // not ready yet
+    assert.strictEqual(comparisonOutdated({ planId: 7, ds: null, view: { provenance: { simulationDatasetId: 12 } } }, plans), false)
+})

@@ -4,7 +4,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const rover = require('../missions/rover')
-const { integrateStep, normalizeTargets, pointToSegmentKm } = require('../lib/util')
+const { integrateStep, normalizeTargets, pointToSegmentKm, positionFromProfiles, runFailure } = require('../lib/util')
 
 const seg = (t, dynamics) => ({ t, dynamics, is_gap: false })
 const WP = [[77.45, 18.44], [77.44, 18.44], [77.43, 18.44], [77.42, 18.44]]
@@ -46,7 +46,22 @@ test('planned route, simulated track and inputs are separate features', async ()
     assert.strictEqual(driven.properties.basis, 'simulated')
     assert.strictEqual(driven.properties.spanId, 1)
     assert.ok(kinds(v, 'input').includes('site'))
-    assert.deepStrictEqual(v.position.samples.map((s) => s[1]), [77.45, 77.44, 77.43])
+    // The position track is declared (rover.tracked) and read generically from the same profiles.
+    const pos = positionFromProfiles(PROFILES, rover.tracked[0], 0, rover.conventions)
+    assert.deepStrictEqual(pos.samples.map((s) => s[1]), [77.45, 77.44, 77.43])
+    assert.deepStrictEqual(pos.source, { lat: 'rover.latitude', lon: 'rover.longitude', basis: 'simulated' })
+})
+
+test('a run failure is one short line, with the raw reason kept', () => {
+    const reason = { data: { type: 'INTERNAL_ERROR', trace: 'java.lang.IllegalArgumentException: at most 8 sites, got 9\n\tat scheduling.TraversePlanner.plan(TraversePlanner.java:1)' + 'x'.repeat(5000) } }
+    const f = runFailure('scheduling', reason)
+    assert.strictEqual(f.summary, 'Scheduling failed')
+    assert.strictEqual(f.cause, 'at most 8 sites, got 9')
+    assert.ok(f.detail.length > 5000) // nothing cut from the details
+    assert.strictEqual(rover.explainError(f.cause), 'Too many sites: 9 (the planner takes at most 8)')
+    // Only causes the adapter understands get a specific line.
+    assert.strictEqual(rover.explainError('NullPointerException'), null)
+    assert.strictEqual(runFailure('simulation', 'boom').cause, null)
 })
 
 test('a simulation that leaves the plan is reported, not hidden', async () => {
@@ -65,7 +80,7 @@ test('a plan with no simulation still shows its planned route', async () => {
     const v = await rover.interpret({ ...ctx, dataset: null })
     assert.deepStrictEqual(kinds(v, 'planned'), ['route'])
     assert.deepStrictEqual(kinds(v, 'simulated'), [])
-    assert.strictEqual(v.position, null)
+    assert.strictEqual(v.position, undefined) // and no position track: positions come only from a simulation
 })
 
 test('metrics come from the simulated resources', async () => {
@@ -103,11 +118,11 @@ test('goal arguments round-trip, sites and avoided regions by geometry type', ()
     )
     assert.strictEqual(fc.features[0].properties.priority, 3)
     assert.strictEqual(fc.features[0].properties.junk, undefined)
-    const args = rover.goals[0].arguments(fc, { objective: 'MIN_TIME', maxSlopeDeg: 15, minSOC: 40, observeDurationMin: 20, startAfterMin: 30 })
+    const args = rover.goals[0].arguments(fc, { objective: 'MIN_TIME', maxSlopeDeg: 15, minSOC: 40, observeDurationMin: 20, startAfterMin: 30, driveWindow: 'ANY_TIME' })
     assert.strictEqual(JSON.parse(args.sites).features.length, 1)
     assert.strictEqual(JSON.parse(args.avoid).features[0].id, 'r')
     const back = rover.inputsFromGoalArguments({ ScheduleTraverse: args })
-    assert.deepStrictEqual(back.params, { objective: 'MIN_TIME', maxSlopeDeg: 15, minSOC: 40, observeDurationMin: 20, startAfterMin: 30 })
+    assert.deepStrictEqual(back.params, { objective: 'MIN_TIME', maxSlopeDeg: 15, minSOC: 40, observeDurationMin: 20, startAfterMin: 30, driveWindow: 'ANY_TIME' })
     assert.strictEqual(back.targets.features.length, 2)
     // Blank sites: the goal used the mission's own catalog.
     assert.ok(rover.inputsFromGoalArguments({ ScheduleTraverse: { objective: 'MIN_ENERGY' } }).targets.features.length >= 6)
