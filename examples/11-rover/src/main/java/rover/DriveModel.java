@@ -4,9 +4,9 @@ package rover;
  * How fast the rover drives and what driving costs, as a function of terrain slope.
  *
  * <p><b>Illustrative only.</b> None of these numbers comes from a vehicle design: the rover drives
- * faster and further than any flown Mars rover, around the clock. They are chosen so that slope
+ * faster and further than any flown Mars rover. They are chosen so that slope
  * matters to a traverse. The mission model's {@code Drive} activity and the {@code ScheduleTraverse}
- * goal both call this class, so a planned traverse and its simulation always agree on it.
+ * goal both call this class (and {@link MarsSun}), so a planned traverse and its simulation always agree on it.
  */
 public final class DriveModel {
   /** Radius of the Mars 2000 sphere the terrain product is referenced to. */
@@ -29,6 +29,19 @@ public final class DriveModel {
   public static final double ON_ROUTE_TOLERANCE_KM = 0.05;
 
   private DriveModel() {}
+
+  /** Solar irradiance at 1 AU, W/m^2 (the power library's GenericSolarArray constant). */
+  public static final double SOLAR_CONSTANT = 1360.8;
+
+  /** Array output with the Sun overhead at 1 AU: what GenericSolarArray computes for this array. */
+  public static double arrayZenithW1AU(double cellAreaM2, double losses) {
+    return SOLAR_CONSTANT * cellAreaM2 * losses;
+  }
+
+  /** A horizontal array's output, W: as the mission model's GenericSolarArray computes it from the Sun's elevation and distance. */
+  public static double arrayW(double zenithW1AU, double sunElevationDeg, double au) {
+    return sunElevationDeg <= 0 ? 0 : zenithW1AU / (au * au) * Math.sin(Math.toRadians(sunElevationDeg));
+  }
 
   /** Great-circle distance in km between two planetocentric lat/lon points (degrees). */
   public static double distanceKm(double lat1, double lon1, double lat2, double lon2) {

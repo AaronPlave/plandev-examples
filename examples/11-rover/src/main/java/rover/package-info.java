@@ -11,6 +11,7 @@
 @WithActivityType(Drive.class)
 @WithActivityType(Observe.class)
 @WithActivityType(Downlink.class)
+@WithActivityType(Wait.class)
 @WithActivityType(PlaybackData.class)
 @WithActivityType(DeleteData.class)
 
@@ -19,6 +20,7 @@ package rover;
 import rover.activities.Drive;
 import rover.activities.Observe;
 import rover.activities.Downlink;
+import rover.activities.Wait;
 import gov.nasa.ammos.plandev.data.activities.PlaybackData;
 import gov.nasa.ammos.plandev.data.activities.DeleteData;
 import gov.nasa.ammos.plandev.contrib.serialization.rulesets.BasicValueMappers;

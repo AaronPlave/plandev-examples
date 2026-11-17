@@ -19,6 +19,7 @@ import org.jetbrains.annotations.Nullable;
 import rover.Terrain;
 import scheduling.TraversePlanner;
 import scheduling.TraversePlanner.Itinerary;
+import scheduling.TraversePlanner.Daylight;
 import scheduling.TraversePlanner.Objective;
 import scheduling.TraversePlanner.Power;
 import scheduling.TraversePlanner.Site;
@@ -44,10 +45,13 @@ import java.util.Map;
  *   <li>{@code objective}: what each route minimizes: {@code MIN_DISTANCE}, {@code MIN_TIME} or {@code MIN_ENERGY}.
  *   <li>{@code maxSlopeDeg}: cells steeper than this are impassable.
  *   <li>{@code minSOC}: the rover stops to recharge rather than let its estimated state of charge fall below this.
+ *   <li>{@code driveWindow}: {@code DAYLIGHT} drives only inside the mission's drive window (the Sun at least
+ *       its minimum elevation, with its daylight margin left at each start), waiting overnight where
+ *       needed; {@code ANY_TIME} drives whenever the battery allows.
  * </ul>
  *
- * <p>The start location, state of charge, battery capacity and array output are read from a
- * simulation of the plan at {@code startAfter}.
+ * <p>The start location, state of charge, battery capacity, array size and the mission's drive-window
+ * limits are read from a simulation of the plan at {@code startAfter}.
  */
 @SchedulingProcedure
 public record ScheduleTraverse(
@@ -57,7 +61,8 @@ public record ScheduleTraverse(
     double maxSlopeDeg,
     double minSOC,
     Duration startAfter,
-    Duration observeDuration) implements Goal {
+    Duration observeDuration,
+    String driveWindow) implements Goal {
 
   @WithDefaults
   public static final class Defaults {
@@ -68,6 +73,7 @@ public record ScheduleTraverse(
     public static double minSOC = 30.0;
     public static Duration startAfter = Duration.of(1, Duration.HOUR);
     public static Duration observeDuration = Duration.of(30, Duration.MINUTES);
+    public static String driveWindow = "DAYLIGHT";
   }
 
   /** Illustrative science data rate while observing. */
@@ -90,7 +96,16 @@ public record ScheduleTraverse(
         TraversePlanner.parsePolygons(avoid),
         Objective.valueOf(objective),
         maxSlopeDeg,
-        new Power(sample(sim, "mainbattery.batterySOC", start), sample(sim, "rover.batteryCapacityWh", start), sample(sim, "array.powerProduction", start)),
+        new Power(sample(sim, "mainbattery.batterySOC", start), sample(sim, "rover.batteryCapacityWh", start), sample(sim, "rover.arrayZenithW1AU", start)),
+        new Daylight(
+            plan.toAbsolute(Duration.ZERO).toEpochMilli(),
+            switch (driveWindow) {
+              case "DAYLIGHT" -> true;
+              case "ANY_TIME" -> false;
+              default -> throw new IllegalArgumentException("driveWindow must be DAYLIGHT or ANY_TIME, got " + driveWindow);
+            },
+            sample(sim, "rover.driveMinSunElevationDeg", start),
+            Math.round(sample(sim, "rover.driveDaylightMarginMin", start) * 60)),
         minSOC,
         sample(sim, "rover.latitude", start),
         sample(sim, "rover.longitude", start),
@@ -100,6 +115,14 @@ public record ScheduleTraverse(
 
     for (final Step s : itinerary.steps()) {
       final Site site = s.site();
+      if (s.type().equals("Wait")) {
+        plan.create(new NewDirective(
+            new AnyDirective(Map.of("reason", SerializedValue.of(s.reason()), "duration", SerializedValue.of(s.durationSec() * 1_000_000L))),
+            "Wait: " + s.reason().replaceAll(",.*", ""),
+            "Wait",
+            new DirectiveStart.Absolute(Duration.of(s.startSec(), Duration.SECONDS))));
+        continue;
+      }
       final boolean drive = s.type().equals("Drive");
       final Map<String, SerializedValue> args = drive
           ? Map.of(
@@ -123,7 +146,7 @@ public record ScheduleTraverse(
           new DirectiveStart.Absolute(Duration.of(s.startSec(), Duration.SECONDS))));
     }
     for (final String note : itinerary.notes()) System.out.println("[ScheduleTraverse] " + note);
-    System.out.printf("[ScheduleTraverse] %s on %s: %d sites, %d activities%n", objective, terrain.id, itinerary.visited().size(), itinerary.steps().size());
+    System.out.printf("[ScheduleTraverse] %s, %s, on %s: %d sites, %d activities%n", objective, driveWindow, terrain.id, itinerary.visited().size(), itinerary.steps().size());
     plan.commit();
   }
 

@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import rover.DriveModel;
+import rover.MarsSun;
 import rover.Terrain;
 
 import java.util.ArrayList;
@@ -14,10 +15,13 @@ import java.util.PriorityQueue;
 
 /**
  * Plans a rover traverse over the terrain grid: which sites to visit, in what order, along which
- * cells, and when to stop and recharge. Pure functions of their inputs, so the goal that calls them
- * ({@code ScheduleTraverse}) is reproducible and testable without PlanDev.
+ * cells, and when to stop: to recharge, and, under the daylight rule, for the night. Pure functions of
+ * their inputs, so the goal that calls them ({@code ScheduleTraverse}) is reproducible and testable
+ * without PlanDev.
  *
- * <p>Every duration and energy here comes from {@link DriveModel}, which the simulation also uses.
+ * <p>Every duration and energy here comes from {@link DriveModel}, and the Sun from {@link MarsSun},
+ * which the simulation also uses. The planner's state of charge is an estimate: it integrates the
+ * array's output in steps of up to {@link #SUN_STEP_SEC}, as the model updates it.
  */
 public final class TraversePlanner {
   public enum Objective { MIN_DISTANCE, MIN_TIME, MIN_ENERGY }
@@ -27,11 +31,21 @@ public final class TraversePlanner {
   /** A route between two points. Waypoints are [longitude, latitude], rounded to 1e-6 degrees. */
   public record Path(List<double[]> waypoints, double km, long seconds, double driveWh, double maxSlopeDeg) {}
 
-  /** The battery as simulated at the start of the traverse. */
-  public record Power(double socPct, double capacityWh, double productionW) {}
+  /** The battery as simulated at the start of the traverse, and the array (its output with the Sun overhead at 1 AU). */
+  public record Power(double socPct, double capacityWh, double arrayZenithW1AU) {}
 
-  /** One activity to create: type "Drive" (with waypoints) or "Observe". Times are seconds from plan start. */
-  public record Step(String type, Site site, int part, long startSec, long durationSec, List<double[]> waypoints) {}
+  /**
+   * When the rover may drive. With {@code daylightOnly}, a drive runs only while the Sun is at least
+   * {@code minSunElevationDeg} high at the rover, and starts only if it stays that high for {@code marginSec}
+   * more; otherwise the rover drives at any hour. {@code planStartMs} (UTC) puts plan-relative seconds on the Sun's clock.
+   */
+  public record Daylight(long planStartMs, boolean daylightOnly, double minSunElevationDeg, long marginSec) {}
+
+  /**
+   * One activity to create: type "Drive" (with waypoints), "Observe", or "Wait" (with a reason). Times
+   * are seconds from plan start. A Wait's site is the one the rover is heading for.
+   */
+  public record Step(String type, Site site, int part, long startSec, long durationSec, List<double[]> waypoints, String reason) {}
 
   public record Itinerary(List<Step> steps, List<Site> visited, List<String> notes) {}
 
@@ -39,6 +53,13 @@ public final class TraversePlanner {
   public static final double RESUME_SOC = 95.0;
   /** Pause after each drive before the next activity. */
   public static final long SETTLE_SECONDS = 60;
+  /** Longest step over which the array's output is taken as constant (the model's Sun update interval). */
+  public static final long SUN_STEP_SEC = 600;
+  /**
+   * Drives start this long after the drive window opens and end this long before it closes: the model
+   * finds the same crossings at the rover's simulated location, to within a second.
+   */
+  public static final long WINDOW_GUARD_SEC = 60;
   // ponytail: visiting orders are searched exhaustively, which is exact up to here; a heuristic search beyond.
   public static final int MAX_SITES = 8;
 
@@ -144,108 +165,226 @@ public final class TraversePlanner {
 
   /**
    * A traverse from (lat, lon) starting at {@code startSec}: the visiting order that collects the most
-   * site priority by {@code endSec}, and among those the quickest, counting recharge time. Each leg is
-   * routed by {@link #route}; a drive is split, and the rover waits to recharge, wherever the
-   * estimated state of charge would fall below {@code minSOC}.
+   * site priority by {@code endSec}, and among those the one that finishes first. Each leg is routed by
+   * {@link #route}; every candidate order is played forward in time, so night, recharge stops and the
+   * daylight rule count exactly as they will be scheduled.
    */
   public static Itinerary plan(Terrain t, List<Site> sites, List<List<double[]>> avoid, Objective objective, double maxSlopeDeg,
-                               Power power, double minSOC, double lat, double lon, long startSec, long endSec, long observeSec) {
+                               Power power, Daylight daylight, double minSOC, double lat, double lon, long startSec, long endSec, long observeSec) {
     if (sites.size() > MAX_SITES) throw new IllegalArgumentException("at most " + MAX_SITES + " sites, got " + sites.size());
-    final double rechargeW = power.productionW() - DriveModel.IDLE_W;
-    if (rechargeW <= 0) throw new IllegalArgumentException("the array produces no more than the idle load; the rover cannot recharge");
     final List<String> notes = new ArrayList<>();
     final int n = sites.size();
     // paths[i][j]: from node i to site j, where node n is the start.
     final Path[][] paths = new Path[n + 1][n];
-    final double[][] legSeconds = new double[n + 1][n];
     for (int i = 0; i <= n; i++) {
       for (int j = 0; j < n; j++) {
         if (i == j) continue;
         final double fromLat = i == n ? lat : sites.get(i).lat(), fromLon = i == n ? lon : sites.get(i).lon();
-        final Path p = route(t, fromLat, fromLon, sites.get(j).lat(), sites.get(j).lon(), objective, maxSlopeDeg, avoid);
-        paths[i][j] = p;
-        if (p == null) continue;
-        // Time to earn back what the leg takes out of the battery, at the resting recharge rate.
-        final double netWh = p.driveWh() - rechargeW * p.seconds() / 3600.0;
-        legSeconds[i][j] = p.seconds() + SETTLE_SECONDS + observeSec + Math.max(0, netWh) / rechargeW * 3600.0;
+        paths[i][j] = route(t, fromLat, fromLon, sites.get(j).lat(), sites.get(j).lon(), objective, maxSlopeDeg, avoid);
       }
     }
     for (int j = 0; j < n; j++) {
       if (paths[n][j] == null) notes.add("site " + sites.get(j).id() + " cannot be reached: no route within the slope limit and outside the avoided regions");
     }
+    final Walker w = new Walker(t, power, daylight, minSOC, endSec, observeSec);
+    final int[] best = search(sites, paths, w, new State(startSec, power.socPct()));
 
-    final int[] best = search(sites, paths, legSeconds, endSec - startSec);
     final List<Step> steps = new ArrayList<>();
     final List<Site> visited = new ArrayList<>();
-    double soc = power.socPct();
-    long time = startSec;
+    State st = new State(startSec, power.socPct());
     int from = n;
     for (final int j : best) {
-      final Site site = sites.get(j);
-      final List<double[]> wp = paths[from][j].waypoints();
-      final List<Step> legSteps = new ArrayList<>();
-      int segStart = 0, part = 1;
-      long segStartSec = time;
-      for (int i = 1; i < wp.size(); i++) {
-        final double km = DriveModel.distanceKm(wp.get(i - 1)[1], wp.get(i - 1)[0], wp.get(i)[1], wp.get(i)[0]);
-        final double slope = DriveModel.legSlopeDeg(t, wp.get(i)[1], wp.get(i)[0]);
-        final long s = DriveModel.legSeconds(km, slope);
-        final double dSoc = (rechargeW - DriveModel.drivePowerW(slope)) * s / 3600.0 / power.capacityWh() * 100;
-        if (soc + dSoc < minSOC && soc < RESUME_SOC) {
-          if (i - 1 > segStart) {
-            legSteps.add(new Step("Drive", site, part++, segStartSec, time - segStartSec, wp.subList(segStart, i)));
-            time += SETTLE_SECONDS;
-          }
-          time += Math.round((RESUME_SOC - soc) / 100 * power.capacityWh() / rechargeW * 3600);
-          soc = RESUME_SOC;
-          segStart = i - 1;
-          segStartSec = time;
-        }
-        soc = Math.min(100, soc + dSoc);
-        time += s;
-      }
-      if (wp.size() - 1 > segStart) legSteps.add(new Step("Drive", site, part, segStartSec, time - segStartSec, wp.subList(segStart, wp.size())));
-      time += SETTLE_SECONDS;
-      if (time + observeSec > endSec) {
-        notes.add("site " + site.id() + " and any after it dropped: the traverse would run past the plan end");
-        break;
-      }
-      steps.addAll(legSteps);
-      steps.add(new Step("Observe", site, 1, time, observeSec, List.of()));
-      soc = Math.min(100, soc + (rechargeW - DriveModel.OBSERVE_W) * observeSec / 3600.0 / power.capacityWh() * 100);
-      time += observeSec;
-      visited.add(site);
+      final Visit v = w.visit(st, paths[from][j], sites.get(j));
+      steps.addAll(v.steps());
+      visited.add(sites.get(j));
+      st = v.end();
       from = j;
     }
     for (final Site s : sites) {
       if (!visited.contains(s) && notes.stream().noneMatch(x -> x.startsWith("site " + s.id() + " "))) notes.add("site " + s.id() + " not visited: no time for it before the plan end");
     }
+    if (daylight.daylightOnly()) notes.add(String.format("drives only with the Sun at least %.0f° high, starting with %d min of that left", daylight.minSunElevationDeg(), daylight.marginSec() / 60));
     return new Itinerary(steps, visited, notes);
   }
 
-  /** Depth-first over visiting orders: most total priority within the time budget, then least time. */
-  private static int[] search(List<Site> sites, Path[][] paths, double[][] legSeconds, double budgetSec) {
+  /** Where the traverse stands: seconds from plan start, estimated state of charge. */
+  record State(long t, double soc) {}
+
+  /** The activities that take the rover to a site and observe it, and the state after. */
+  record Visit(State end, List<Step> steps) {}
+
+  /** Plays a traverse forward in time: drives, recharge stops, nights and observations. */
+  static final class Walker {
+    final Terrain terrain;
+    final Power power;
+    final Daylight day;
+    final double minSOC;
+    final long endSec, observeSec;
+
+    Walker(Terrain terrain, Power power, Daylight day, double minSOC, long endSec, long observeSec) {
+      this.terrain = terrain;
+      this.power = power;
+      this.day = day;
+      this.minSOC = minSOC;
+      this.endSec = endSec;
+      this.observeSec = observeSec;
+    }
+
+    long ms(long sec) {
+      return day.planStartMs() + sec * 1000;
+    }
+
+    double arrayW(long sec, double lat, double lon) {
+      final MarsSun.Sky sky = MarsSun.sky(ms(sec));
+      return DriveModel.arrayW(power.arrayZenithW1AU(), MarsSun.elevationDeg(sky, lat, lon), sky.au());
+    }
+
+    /** State of charge after {@code dur} seconds from {@code t} with a load of {@code loadW} on top of the idle load. */
+    double charge(double soc, long t, long dur, double lat, double lon, double loadW) {
+      for (long a = 0; a < dur; a += SUN_STEP_SEC) {
+        final long d = Math.min(SUN_STEP_SEC, dur - a);
+        final double w = arrayW(t + a + d / 2, lat, lon) - DriveModel.IDLE_W - loadW;
+        soc = Math.min(100, soc + w * d / 3600.0 / power.capacityWh() * 100);
+      }
+      return soc;
+    }
+
+    boolean sunUp(long sec, double lat, double lon) {
+      return MarsSun.elevationDeg(ms(sec), lat, lon) >= day.minSunElevationDeg();
+    }
+
+    /** Seconds from plan start at which the drive window next closes (or opens), at or after {@code sec}; MAX_VALUE beyond a sol and a half. */
+    long next(long sec, double lat, double lon, boolean opening) {
+      final long ms = MarsSun.nextCrossing(ms(sec), ms(sec) + 133_200_000L, lat, lon, day.minSunElevationDeg(), opening, SUN_STEP_SEC * 1000);
+      return ms == Long.MAX_VALUE ? Long.MAX_VALUE : Math.floorDiv(ms - day.planStartMs() + 999, 1000);
+    }
+
+    /** Earliest time at or after {@code t} at which a drive may start here. */
+    long drivable(long t, double lat, double lon) {
+      if (!day.daylightOnly()) return t;
+      for (int k = 0; k < 4; k++) {
+        if (sunUp(t, lat, lon)) {
+          final long close = next(t, lat, lon, false);
+          if (close - t >= day.marginSec() + WINDOW_GUARD_SEC) return t;
+          t = close;
+        }
+        final long open = next(t, lat, lon, true);
+        if (open == Long.MAX_VALUE) return Long.MAX_VALUE;
+        t = open + WINDOW_GUARD_SEC;
+      }
+      return Long.MAX_VALUE;
+    }
+
+    /** Drive the path from {@code s} and observe the site, or null if that cannot finish by the plan end. */
+    Visit visit(State s, Path path, Site site) {
+      final List<double[]> wp = path.waypoints();
+      final List<Step> steps = new ArrayList<>();
+      long t = s.t();
+      double soc = s.soc();
+      int segStart = -1, part = 1, stuck = 0;
+      boolean closed = false; // the last drive stopped because its window was closing
+      long segStartT = 0, close = Long.MAX_VALUE;
+      for (int i = 1; i < wp.size(); i++) {
+        final double lat = wp.get(i - 1)[1], lon = wp.get(i - 1)[0];
+        if (segStart < 0) {
+          final long go = drivable(t, lat, lon);
+          if (go > endSec) return null;
+          if (go > t) {
+            final double e = MarsSun.elevationDeg(ms(t), lat, lon);
+            final String why = e < day.minSunElevationDeg() ? String.format("night: Sun below %.0f°", day.minSunElevationDeg())
+                : closed ? String.format("night: Sun about to drop below %.0f°", day.minSunElevationDeg())
+                : String.format("night: under %d min of drive window left", day.marginSec() / 60);
+            soc = waitStep(steps, site, t, go, soc, lat, lon, why);
+            t = go;
+          }
+          segStart = i - 1;
+          segStartT = t;
+          close = day.daylightOnly() ? next(t, lat, lon, false) - WINDOW_GUARD_SEC : Long.MAX_VALUE;
+        }
+        final double km = DriveModel.distanceKm(lat, lon, wp.get(i)[1], wp.get(i)[0]);
+        final double slope = DriveModel.legSlopeDeg(terrain, wp.get(i)[1], wp.get(i)[0]);
+        final long legSec = DriveModel.legSeconds(km, slope);
+        final double after = charge(soc, t, legSec, lat, lon, DriveModel.drivePowerW(slope));
+        final boolean low = after < minSOC && soc < RESUME_SOC;
+        closed = !low && t + legSec > close;
+        if (low || closed) {
+          // Stop here: end the drive at this waypoint, then wait for charge or for the next window.
+          if (i - 1 > segStart) {
+            steps.add(new Step("Drive", site, part++, segStartT, t - segStartT, wp.subList(segStart, i), null));
+            soc = charge(soc, t, SETTLE_SECONDS, lat, lon, 0);
+            t += SETTLE_SECONDS;
+            stuck = 0;
+          } else if (++stuck > 2) {
+            return null; // this leg never fits a window or a charge: the route cannot be driven
+          }
+          segStart = -1;
+          if (low) {
+            long u = t;
+            double c = soc;
+            while (c < RESUME_SOC) {
+              if (u > endSec) return null;
+              c = charge(c, u, SUN_STEP_SEC, lat, lon, 0);
+              u += SUN_STEP_SEC;
+            }
+            soc = waitStep(steps, site, t, u, soc, lat, lon, String.format("recharge to %.0f %%", RESUME_SOC));
+            t = u;
+          }
+          i--;
+          continue;
+        }
+        soc = after;
+        t += legSec;
+      }
+      if (segStart >= 0 && wp.size() - 1 > segStart) steps.add(new Step("Drive", site, part, segStartT, t - segStartT, wp.subList(segStart, wp.size()), null));
+      final double[] end = wp.get(wp.size() - 1);
+      soc = charge(soc, t, SETTLE_SECONDS, end[1], end[0], 0);
+      t += SETTLE_SECONDS;
+      if (t + observeSec > endSec) return null;
+      steps.add(new Step("Observe", site, 1, t, observeSec, List.of(), null));
+      soc = charge(soc, t, observeSec, end[1], end[0], DriveModel.OBSERVE_W);
+      return new Visit(new State(t + observeSec, soc), steps);
+    }
+
+    /** A Wait from {@code from} to {@code to}, merged into a Wait just before it; the state of charge at its end. */
+    double waitStep(List<Step> steps, Site site, long from, long to, double soc, double lat, double lon, String why) {
+      final Step last = steps.isEmpty() ? null : steps.get(steps.size() - 1);
+      if (last != null && last.type().equals("Wait") && last.startSec() + last.durationSec() == from)
+        steps.set(steps.size() - 1, new Step("Wait", site, 1, last.startSec(), to - last.startSec(), List.of(), last.reason() + ", then " + why));
+      else steps.add(new Step("Wait", site, 1, from, to - from, List.of(), why));
+      return charge(soc, from, to - from, lat, lon, 0);
+    }
+  }
+
+  /**
+   * Depth-first over visiting orders, each played forward by the walker: most total priority by the plan
+   * end, then earliest finish. A branch is cut once even all the sites left could not beat the best.
+   */
+  private static int[] search(List<Site> sites, Path[][] paths, Walker w, State start) {
     final int n = sites.size();
     final int[][] best = {new int[0]};
-    final double[] bestScore = {0, 0}; // priority, seconds
+    final double[] bestScore = {0, Double.MAX_VALUE}; // priority, finish
     final int[] order = new int[n];
     final boolean[] used = new boolean[n];
+    final int total = sites.stream().mapToInt(Site::priority).sum();
     new Object() {
-      void go(int depth, int from, double seconds, int priority) {
-        if (priority > bestScore[0] || (priority == bestScore[0] && depth > 0 && seconds < bestScore[1])) {
+      void go(int depth, int from, State st, int priority, int left) {
+        if (priority > bestScore[0] || (priority == bestScore[0] && depth > 0 && st.t() < bestScore[1])) {
           bestScore[0] = priority;
-          bestScore[1] = seconds;
+          bestScore[1] = st.t();
           best[0] = Arrays.copyOf(order, depth);
         }
+        if (priority + left < bestScore[0]) return;
         for (int j = 0; j < n; j++) {
-          if (used[j] || paths[from][j] == null || seconds + legSeconds[from][j] > budgetSec) continue;
+          if (used[j] || paths[from][j] == null) continue;
+          final Visit v = w.visit(st, paths[from][j], sites.get(j));
+          if (v == null) continue;
           used[j] = true;
           order[depth] = j;
-          go(depth + 1, j, seconds + legSeconds[from][j], priority + sites.get(j).priority());
+          go(depth + 1, j, v.end(), priority + sites.get(j).priority(), left - sites.get(j).priority());
           used[j] = false;
         }
       }
-    }.go(0, n, 0, 0);
+    }.go(0, n, start, 0, total);
     return best[0];
   }
 

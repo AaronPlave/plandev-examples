@@ -3,6 +3,8 @@ package scheduling;
 import org.junit.jupiter.api.Test;
 import rover.DriveModel;
 import rover.Terrain;
+import rover.MarsSun;
+import scheduling.TraversePlanner.Daylight;
 import scheduling.TraversePlanner.Itinerary;
 import scheduling.TraversePlanner.Objective;
 import scheduling.TraversePlanner.Path;
@@ -33,7 +35,13 @@ class TraversePlannerTest {
   }
 
   private static final List<List<double[]>> NONE = List.of();
-  private static final Power POWER = new Power(100, 1680, 200);
+  private static final long START_MS = java.time.Instant.parse("2027-02-01T00:00:00Z").toEpochMilli();
+  /** A big array: the battery is not what these tests are about. */
+  private static final Power POWER = new Power(100, 1680, 5000);
+  private static final Daylight ANY_TIME = new Daylight(START_MS, false, 10, 2700);
+  private static final Daylight DAYLIGHT = new Daylight(START_MS, true, 10, 2700);
+  /** The mission's array (6.5 m^2, see rover.Configuration). */
+  private static final double ARRAY = rover.DriveModel.arrayZenithW1AU(6.5 * 0.9, 0.28 * 0.9);
 
   private static Path across(Terrain t, Objective o, double maxSlope, List<List<double[]>> avoid) {
     return TraversePlanner.route(t, 0.005, 0.005, 0.005, 0.085, o, maxSlope, avoid);
@@ -81,7 +89,7 @@ class TraversePlannerTest {
   void drivesAreSplitToRechargeAboveTheReserve() {
     final Terrain t = grid(12.0);
     final List<Site> far = List.of(new Site("far", "Far", 0.005, 0.085, 1));
-    final Itinerary it = TraversePlanner.plan(t, far, NONE, Objective.MIN_DISTANCE, 20, new Power(100, 150, 200), 60, 0.005, 0.005, 0, 400_000, 600);
+    final Itinerary it = TraversePlanner.plan(t, far, NONE, Objective.MIN_DISTANCE, 20, new Power(100, 150, 2000), ANY_TIME, 60, 0.005, 0.005, 0, 400_000, 600);
     final List<Step> drives = it.steps().stream().filter(s -> s.type().equals("Drive")).toList();
     assertTrue(drives.size() > 1, "a small battery needs a recharge stop on the ridge");
     for (int i = 1; i < drives.size(); i++) {
@@ -90,7 +98,8 @@ class TraversePlannerTest {
       assertEquals(end[0], drives.get(i).waypoints().get(0)[0]);
       assertTrue(drives.get(i).startSec() > drives.get(i - 1).startSec() + drives.get(i - 1).durationSec());
     }
-    final List<Step> ample = TraversePlanner.plan(t, far, NONE, Objective.MIN_DISTANCE, 20, POWER, 30, 0.005, 0.005, 0, 400_000, 600).steps();
+    assertTrue(it.steps().stream().anyMatch(s -> s.type().equals("Wait") && s.reason().startsWith("recharge")));
+    final List<Step> ample = TraversePlanner.plan(t, far, NONE, Objective.MIN_DISTANCE, 20, POWER, ANY_TIME, 30, 0.005, 0.005, 0, 400_000, 600).steps();
     assertEquals(2, ample.size(), "one Drive and one Observe with a large battery");
   }
 
@@ -98,9 +107,9 @@ class TraversePlannerTest {
   void aTightDeadlineKeepsTheMostValuableSites() {
     final Terrain t = grid(1.0);
     final List<Site> sites = List.of(new Site("west-low", "West", 0.005, 0.025, 1), new Site("east-high", "East", 0.005, 0.085, 3));
-    final long both = TraversePlanner.plan(t, sites, NONE, Objective.MIN_TIME, 20, POWER, 30, 0.005, 0.045, 0, 1_000_000, 600)
+    final long both = TraversePlanner.plan(t, sites, NONE, Objective.MIN_TIME, 20, POWER, ANY_TIME, 30, 0.005, 0.045, 0, 1_000_000, 600)
         .steps().stream().mapToLong(s -> s.startSec() + s.durationSec()).max().orElseThrow();
-    final Itinerary tight = TraversePlanner.plan(t, sites, NONE, Objective.MIN_TIME, 20, POWER, 30, 0.005, 0.045, 0, both - 3600, 600);
+    final Itinerary tight = TraversePlanner.plan(t, sites, NONE, Objective.MIN_TIME, 20, POWER, ANY_TIME, 30, 0.005, 0.045, 0, both - 3600, 600);
     assertEquals(List.of("east-high"), tight.visited().stream().map(Site::id).toList());
     assertFalse(tight.notes().isEmpty());
   }
@@ -115,12 +124,74 @@ class TraversePlannerTest {
     assertTrue(shortest.km() < leastEnergy.km());
     assertTrue(shortest.driveWh() > leastEnergy.driveWh());
     for (final Objective o : Objective.values()) {
-      final Itinerary it = TraversePlanner.plan(t, ScheduleTraverse.missionSites(), NONE, o, 20, new Power(100, 1680, 254), 30, 18.4446, 77.4509, 3600, 6 * 86400, 1800);
+      final Itinerary it = TraversePlanner.plan(t, ScheduleTraverse.missionSites(), NONE, o, 20, new Power(100, 1680, ARRAY), DAYLIGHT, 30, 18.4446, 77.4509, 3600, 6 * 86400, 1800);
       final Step last = it.steps().get(it.steps().size() - 1);
       System.out.printf("%s: %s, %d steps, ends %.1f h, %d waypoints; %s%n", o, it.visited().stream().map(Site::id).toList(), it.steps().size(),
           (last.startSec() + last.durationSec()) / 3600.0, it.steps().stream().mapToInt(s -> s.waypoints().size()).sum(), it.notes());
     }
     System.out.printf("west-rim MIN_DISTANCE: %.1f km, %.1f h, %.0f Wh, max slope %.1f deg, %d waypoints%n", shortest.km(), shortest.seconds() / 3600.0, shortest.driveWh(), shortest.maxSlopeDeg(), shortest.waypoints().size());
     System.out.printf("west-rim MIN_ENERGY:   %.1f km, %.1f h, %.0f Wh, max slope %.1f deg, %d waypoints%n", leastEnergy.km(), leastEnergy.seconds() / 3600.0, leastEnergy.driveWh(), leastEnergy.maxSlopeDeg(), leastEnergy.waypoints().size());
+  }
+
+  // ---------- daylight ----------
+
+  private static double sun(long sec, double[] at) {
+    return MarsSun.elevationDeg(START_MS + sec * 1000, at[1], at[0]);
+  }
+
+  /** Seconds of driving with the Sun below the limit, checked every minute of every Drive at its start point. */
+  private static long darkDriving(Itinerary it) {
+    long dark = 0;
+    for (final Step s : it.steps()) {
+      if (!s.type().equals("Drive")) continue;
+      for (long t = s.startSec(); t <= s.startSec() + s.durationSec(); t += 60) if (sun(t, s.waypoints().get(0)) < 10) dark += 60;
+    }
+    return dark;
+  }
+
+  private static Itinerary jezero(Daylight d, long endSec) {
+    return TraversePlanner.plan(Terrain.get(), ScheduleTraverse.missionSites(), NONE, Objective.MIN_ENERGY, 20, new Power(100, 1680, ARRAY), d, 30, 18.4446, 77.4509, 3600, endSec, 1800);
+  }
+
+  @Test
+  void daylightDrivesStayInsideTheWindowAndStartWithTheMargin() {
+    final Itinerary it = jezero(DAYLIGHT, 6 * 86400);
+    assertFalse(it.visited().isEmpty());
+    assertEquals(0, darkDriving(it), "no minute of driving with the Sun below 10 deg");
+    for (final Step s : it.steps()) {
+      if (!s.type().equals("Drive")) continue;
+      final double[] a = s.waypoints().get(0), b = s.waypoints().get(s.waypoints().size() - 1);
+      assertTrue(sun(s.startSec(), a) >= 10 && sun(s.startSec() + s.durationSec(), b) >= 10, "inside the window at both ends");
+      final long close = MarsSun.nextCrossing(START_MS + s.startSec() * 1000, START_MS + (s.startSec() + 100_000) * 1000, a[1], a[0], 10, false, 600_000);
+      assertTrue(close - (START_MS + s.startSec() * 1000) >= 2700_000, "at least 45 min of drive window left at the start");
+    }
+    // The first sol's window is nearly over by the time the traverse may start: the plan waits for the night.
+    assertTrue(it.steps().stream().anyMatch(s -> s.type().equals("Wait") && s.reason().startsWith("night")));
+  }
+
+  @Test
+  void aMultihourDriveIsSplitAcrossSols() {
+    final Itinerary it = jezero(DAYLIGHT, 6 * 86400);
+    final List<Step> steps = it.steps();
+    boolean split = false;
+    for (int i = 2; i < steps.size(); i++) {
+      if (steps.get(i).type().equals("Drive") && steps.get(i).part() > 1 && steps.get(i - 1).type().equals("Wait") && steps.get(i - 1).reason().contains("night")) split = true;
+    }
+    assertTrue(split, "a drive continues after a night's wait");
+  }
+
+  @Test
+  void drivingAtAnyHourDrivesInTheDark() {
+    final long end = 4 * 86400;
+    final Itinerary any = jezero(ANY_TIME, end), day = jezero(DAYLIGHT, end);
+    assertTrue(darkDriving(any) > 3600, "the any-time plan drives for hours with the Sun below 10 deg");
+    assertEquals(0, darkDriving(day));
+    final int pAny = any.visited().stream().mapToInt(Site::priority).sum(), pDay = day.visited().stream().mapToInt(Site::priority).sum();
+    final long fAny = any.steps().get(any.steps().size() - 1).startSec(), fDay = day.steps().get(day.steps().size() - 1).startSec();
+    System.out.printf("ANY_TIME: %s priority %d, last step %.1f h, dark driving %.1f h%nDAYLIGHT: %s priority %d, last step %.1f h%n",
+        any.visited().stream().map(Site::id).toList(), pAny, fAny / 3600.0, darkDriving(any) / 3600.0, day.visited().stream().map(Site::id).toList(), pDay, fDay / 3600.0);
+    // Which plan is better is not asserted: on this rover, night driving runs the battery down and the array
+    // has to repay it in daylight, so the any-time plan can finish later. The simulation is the judge.
+    assertNotEquals(any.steps().size(), day.steps().size());
   }
 }
