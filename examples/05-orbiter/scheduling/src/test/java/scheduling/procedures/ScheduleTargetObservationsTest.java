@@ -29,6 +29,17 @@ class ScheduleTargetObservationsTest {
   }
 
   @Test
+  void parsesAPerTargetSearchWindow() {
+    var t = ScheduleTargetObservations.parseTargets("""
+        {"type":"Feature","id":"c1","properties":{"window":{"start":"2024-01-02T10:00:00Z","end":"2024-01-02T11:30:00.500Z"}},
+         "geometry":{"type":"Point","coordinates":[77.5,18.4]}}""");
+    assertEquals(Instant.parse("2024-01-02T10:00:00Z"), t.get(0).windowStart());
+    assertEquals(Instant.parse("2024-01-02T11:30:00.500Z"), t.get(0).windowEnd());
+    assertNull(ScheduleTargetObservations.parseTargets(
+        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[0,0]}}").get(0).windowStart());
+  }
+
+  @Test
   void greatCircleQuarterMeridian() {
     assertEquals(Math.PI / 2 * ScheduleTargetObservations.MARS_MEAN_RADIUS_KM,
         ScheduleTargetObservations.greatCircleKm(0, 0, 90, 0), 1e-6);
@@ -54,5 +65,15 @@ class ScheduleTargetObservationsTest {
     assertTrue(jezero.distanceKm() < 100, "jezero " + jezero);
     assertTrue(gale.distanceKm() < 100, "gale " + gale);
     System.out.println(jezero + "\n" + gale);
+
+    // A one-orbit window searched alone finds that window's own (farther) closest pass, never the 6-day best.
+    var orbit = ScheduleTargetObservations.closestPass(calc, new ScheduleTargetObservations.Target("jezero", 18.4, 77.5),
+        Instant.parse("2024-01-03T00:00:00Z"), Instant.parse("2024-01-03T01:52:00Z"), step);
+    assertNotNull(orbit);
+    assertTrue(!orbit.time().isBefore(Instant.parse("2024-01-03T00:00:00Z")) && !orbit.time().isAfter(Instant.parse("2024-01-03T01:52:00Z")));
+    assertTrue(orbit.distanceKm() >= jezero.distanceKm());
+    // Outside mro_psp.bsp coverage (ends 2024-05-06) there is no pass at all.
+    assertNull(ScheduleTargetObservations.closestPass(calc, new ScheduleTargetObservations.Target("jezero", 18.4, 77.5),
+        Instant.parse("2024-06-01T00:00:00Z"), Instant.parse("2024-06-01T02:00:00Z"), step));
   }
 }

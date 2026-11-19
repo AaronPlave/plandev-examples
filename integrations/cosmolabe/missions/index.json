@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "missions": {
+    "mro": {
+      "label": "MRO at Mars (examples/05-orbiter)",
+      "models": ["orbiter-mmgis", "orbiter"],
+      "catalog": "mro/catalog.json",
+      "adapter": "mro/adapter.js"
+    }
+  }
+}

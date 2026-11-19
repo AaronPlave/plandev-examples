@@ -37,7 +37,16 @@ const MISSIONS = {
                 description: 'MRO closest sub-spacecraft pass per GeoJSON target → TakeRadarObservation (not footprint coverage).',
             },
         ],
-        plans: [{ name: 'MRO base plan (MMGIS demo)', file: `${EX}/05-orbiter/demo/plans/SimplePlan.json` }],
+        plans: [
+            { name: 'MRO base plan (MMGIS demo)', file: `${EX}/05-orbiter/demo/plans/SimplePlan.json` },
+            // integrations/cosmolabe: 48 h of SPICE-derived orbit events; targets proposed from the 3D view are
+            // staged into this goal invocation, and a target the goal cannot schedule fails the run with its reason.
+            {
+                name: 'MRO orbit ops (Cosmolabe demo)',
+                file: `${EX}/05-orbiter/demo/plans/MarsSat Plan.json`,
+                goals: [{ name: 'ScheduleTargetObservations', arguments: { targets: '{"type":"FeatureCollection","features":[]}', rejectUnscheduled: true } }],
+            },
+        ],
     },
     hopper: {
         model: { name: 'hopper-mmgis', mission: 'Hopper', jar: `${EX}/04-hopper/build/libs/hopper.jar` },

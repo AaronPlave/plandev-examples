@@ -1,0 +1,48 @@
+{
+  "name": "MRO at Mars (PlanDev 05-orbiter)",
+  "description": "MRO trajectory from mro_psp.bsp, the same kernel set examples/05-orbiter loads (spice-kernels/latest_meta_kernel.tm). No attitude (CK) or instrument kernels are loaded, so MRO has no orientation and no instrument geometry here.",
+  "displayNote": "MRO position: mro_psp.bsp (2024-01-01 – 2024-05-06). No attitude or instrument pointing.",
+  "defaultGeographicNames": ["Mars"],
+  "defaultTime": "2024-01-02T00:00:00Z",
+  "defaultViewpoint": "Mars Overview",
+  "require": ["../../cosmolabe/places/mars.json"],
+  "spiceKernels": [
+    "../../kernels/naif0012.tls",
+    "../../kernels/pck00011.tpc",
+    { "url": "../../kernels/de440s.bsp", "label": "Planets (de440s)", "size": 32000000 },
+    { "url": "../../kernels/mar097_2020_2040.bsp", "label": "Mars system (mar097)", "size": 46000000 },
+    { "url": "../../kernels/mro_psp.bsp", "label": "MRO trajectory (mro_psp)", "size": 164000000 }
+  ],
+  "items": [
+    { "name": "Mars Overview", "type": "Viewpoint", "center": "Mars", "distance": 15000, "latitude": 20, "longitude": 0 },
+    { "name": "Track MRO", "type": "Viewpoint", "center": "MRO", "distance": 3000, "latitude": 30, "longitude": 0 },
+    {
+      "name": "Sun", "class": "star",
+      "trajectory": { "type": "FixedPoint", "position": [0, 0, 0] },
+      "geometry": { "type": "Globe", "radius": 695000 },
+      "label": { "color": [1.0, 0.9, 0.3] }
+    },
+    {
+      "name": "Earth", "class": "planet", "center": "Sun",
+      "trajectory": { "type": "Builtin", "name": "EMB" },
+      "geometry": { "type": "Globe", "radius": 6378, "atmosphere": "Earth" },
+      "label": { "color": [0.4, 0.6, 1.0] }
+    },
+    {
+      "name": "Mars", "class": "planet", "center": "Sun", "trajectoryFrame": "J2000",
+      "trajectory": { "type": "Builtin", "name": "Mars" },
+      "rotationModel": { "type": "Spice", "bodyFrame": "IAU_MARS" },
+      "geometry": { "type": "Globe", "radii": [3396.19, 3396.19, 3376.2], "baseMap": "../../cosmolabe/textures/mars.dds", "atmosphere": "Mars" },
+      "label": { "color": [1.0, 0.6, 0.4] },
+      "items": [
+        {
+          "name": "MRO", "class": "spacecraft", "naifId": -74, "center": "Mars", "trajectoryFrame": "J2000",
+          "trajectory": { "type": "Spice", "target": "-74", "center": "MARS" },
+          "label": { "color": [0.9, 0.9, 0.9] },
+          "trajectoryPlot": { "color": [0.2, 0.8, 1.0], "fade": 0.5 },
+          "description": "Position from mro_psp.bsp. No CK is loaded: MRO has no attitude in this scene, and is drawn as a marker."
+        }
+      ]
+    }
+  ]
+}

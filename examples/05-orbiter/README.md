@@ -90,7 +90,7 @@ repository. After updating the Compose file, recreate the affected workers with 
 | `SchedulePriorityActivities` | Priority-based scheduling with 7 activity priorities and altitude thresholds |
 | `SchedulePriorityActivitiesAfterDownlink` | Battery-aware priority scheduling with two modes: RE-SIMULATION and VIRTUAL BATTERY |
 | `ScheduleRadarWithStopConditions` | Simulate-then-verify with rollback: pre/post-checks on battery, data volume, and downlink conflicts |
-| `ScheduleTargetObservations` | Takes GeoJSON Mars targets as an argument. For each, finds the closest MRO sub-spacecraft pass and schedules a `TakeRadarObservation` there (closest pass, not footprint coverage). Used by [`integrations/mmgis`](../../integrations/mmgis/) |
+| `ScheduleTargetObservations` | Takes GeoJSON Mars targets as an argument. For each, finds the closest MRO sub-spacecraft pass and schedules a `TakeRadarObservation` there (closest pass, not footprint coverage). A target may carry its own search `window`; `rejectUnscheduled` fails the run on a target it cannot schedule. Used by [`integrations/mmgis`](../../integrations/mmgis/) and [`integrations/cosmolabe`](../../integrations/cosmolabe/) |
 
 ## Constraint procedures
 

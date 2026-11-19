@@ -50,6 +50,12 @@ import java.util.Map;
  * Polygons are reduced to the mean of their outer-ring vertices. Each feature's {@code id}
  * (or {@code properties.id}) becomes the directive name suffix: {@code TargetObs <id>}, which is how
  * downstream tools associate created activities with their source features.
+ *
+ * <p>A feature may narrow its own search with {@code properties.window = {"start": ISO-8601 UTC, "end": …}}
+ * (e.g. a candidate interval proposed from a 3D viewer). The window must lie inside the plan; it is searched
+ * with the same kernels and step as the whole plan. With {@code rejectUnscheduled}, a target that cannot be
+ * scheduled (no ephemeris coverage, or no pass within {@code maxGroundDistanceKm}) fails the run with the
+ * reason, so nothing is committed; otherwise it is skipped and logged.
  */
 @SchedulingProcedure
 public record ScheduleTargetObservations(
@@ -57,7 +63,8 @@ public record ScheduleTargetObservations(
     double maxGroundDistanceKm,
     Duration observationDuration,
     String mode,
-    Duration searchStep) implements Goal {
+    Duration searchStep,
+    boolean rejectUnscheduled) implements Goal {
 
   public static final String NAME_PREFIX = "TargetObs ";
   /** IAU 2015 Mars mean radius, used only for great-circle ground distance. */
@@ -75,9 +82,15 @@ public record ScheduleTargetObservations(
     public static Duration observationDuration = Duration.of(5, Duration.MINUTES);
     public static String mode = "HI_RES";
     public static Duration searchStep = Duration.of(30, Duration.SECONDS);
+    public static boolean rejectUnscheduled = false;
   }
 
-  public record Target(String id, double latDeg, double lonDeg) {}
+  /** {@code windowStart}/{@code windowEnd}: the feature's own search window, or null for the whole plan. */
+  public record Target(String id, double latDeg, double lonDeg, Instant windowStart, Instant windowEnd) {
+    public Target(String id, double latDeg, double lonDeg) {
+      this(id, latDeg, lonDeg, null, null);
+    }
+  }
   public record Pass(Instant time, double distanceKm, double subLatDeg, double subLonDeg) {}
 
   @NotNull
@@ -100,14 +113,24 @@ public record ScheduleTargetObservations(
     final long halfObsMicros = observationDuration.in(Duration.MICROSECONDS) / 2;
 
     for (final Target t : parsed) {
-      final Pass pass = closestPass(calc, t, start, end, stepMicros);
+      final Instant from = t.windowStart() == null ? start : t.windowStart();
+      final Instant to = t.windowEnd() == null ? end : t.windowEnd();
+      if (from.isBefore(start) || to.isAfter(end) || !from.isBefore(to)) {
+        throw new IllegalArgumentException("target %s: search window %s – %s is empty or outside the plan (%s – %s)"
+            .formatted(t.id(), from, to, start, end));
+      }
+      final Pass pass = closestPass(calc, t, from, to, stepMicros);
       if (pass == null || pass.distanceKm() > maxGroundDistanceKm) {
-        System.out.printf("[ScheduleTargetObservations] target %s: no pass within %.1f km (closest %s)%n",
-            t.id(), maxGroundDistanceKm, pass == null ? "n/a" : String.format("%.1f km", pass.distanceKm()));
+        final String why = pass == null
+            ? "no MRO ephemeris coverage between %s and %s".formatted(from, to)
+            : "closest MRO sub-spacecraft pass between %s and %s is %.1f km from (%.4f, %.4f), at %s; limit %.1f km"
+                .formatted(from, to, pass.distanceKm(), t.latDeg(), t.lonDeg(), pass.time(), maxGroundDistanceKm);
+        if (rejectUnscheduled) throw new IllegalArgumentException("target %s not scheduled: %s".formatted(t.id(), why));
+        System.out.printf("[ScheduleTargetObservations] target %s: not scheduled: %s%n", t.id(), why);
         continue;
       }
       Instant obsStart = pass.time().minusNanos(halfObsMicros * 1000);
-      if (obsStart.isBefore(start)) obsStart = start;
+      if (obsStart.isBefore(from)) obsStart = from;
       System.out.printf("[ScheduleTargetObservations] target %s (%.4f, %.4f): closest pass %s, %.1f km, sub-SC (%.4f, %.4f)%n",
           t.id(), t.latDeg(), t.lonDeg(), pass.time(), pass.distanceKm(), pass.subLatDeg(), pass.subLonDeg());
 
@@ -183,7 +206,11 @@ public record ScheduleTargetObservations(
         case "Polygon" -> ringMean(coords.get(0).getAsJsonArray());
         default -> throw new IllegalArgumentException("Unsupported target geometry " + type + " (Point or Polygon only)");
       };
-      out.add(new Target(featureId(f, i), lonLat[1], normalizeLon(lonLat[0])));
+      final JsonObject window = f.has("properties") && f.getAsJsonObject("properties").has("window")
+          ? f.getAsJsonObject("properties").getAsJsonObject("window") : null;
+      out.add(new Target(featureId(f, i), lonLat[1], normalizeLon(lonLat[0]),
+          window == null ? null : Instant.parse(window.get("start").getAsString()),
+          window == null ? null : Instant.parse(window.get("end").getAsString())));
     }
     return out;
   }
