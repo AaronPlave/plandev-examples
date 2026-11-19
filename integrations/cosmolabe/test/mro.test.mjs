@@ -1,6 +1,6 @@
 // node --test integrations/cosmolabe/test/*.test.mjs
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { targets, vehicle } from '../missions/mro/adapter.js';
 import { fileFor } from '../serve.mjs';
@@ -47,7 +47,20 @@ test('created activities map back to targets by the goal’s directive name', ()
   // The prefix must match the goal's NAME_PREFIX.
   const goal = readFileSync(new URL('../../../examples/05-orbiter/scheduling/src/main/java/scheduling/procedures/ScheduleTargetObservations.java', import.meta.url), 'utf8');
   assert.match(goal, /NAME_PREFIX = "TargetObs "/);
+  assert.match(goal, new RegExp(`MARS_MEAN_RADIUS_KM = ${targets.meanRadiusKm};`));
   assert.equal(targets.directiveName('x'), 'TargetObs x');
+});
+
+test('the scene loads a PCK its N0066 CSPICE reads correctly, and the same kernels the model loads otherwise', () => {
+  const catalog = JSON.parse(readFileSync(new URL('../missions/mro/catalog.json', import.meta.url), 'utf8'));
+  const kernels = catalog.spiceKernels.map((k) => (typeof k === 'string' ? k : k.url).split('/').pop());
+  // pck00011.tpc's Mars model needs CSPICE N0067; Cosmolabe's cspice-wasm is N0066 (Mars pole 2.2° off).
+  assert.ok(kernels.includes('pck00011_n0066.tpc') && !kernels.includes('pck00011.tpc'));
+  // …and it must stay out of spice-kernels/: the model furnishes every .tpc there, and it would override pck00011.
+  assert.ok(!existsSync(new URL('../../../spice-kernels/pck00011_n0066.tpc', import.meta.url)));
+  assert.ok(existsSync(new URL('../missions/mro/pck00011_n0066.tpc', import.meta.url)));
+  const meta = readFileSync(new URL('../../../spice-kernels/latest_meta_kernel.tm', import.meta.url), 'utf8');
+  for (const k of kernels.filter((k) => k !== 'pck00011_n0066.tpc')) assert.ok(meta.includes(k), k);
 });
 
 test('the server serves only inside its roots', () => {

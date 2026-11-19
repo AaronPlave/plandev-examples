@@ -23,6 +23,8 @@ export const targets = {
     longitudeDomain: '-180..180',
     referenceShape: { kind: 'ellipsoid', radiiKm: [3396.19, 3396.19, 3376.2] },
   },
+  /** Mars mean radius for exploratory ground-track distances: the goal's MARS_MEAN_RADIUS_KM. */
+  meanRadiusKm: 3389.5,
   /** Staging allows at most this many targets in the goal (what one closest-pass search per target costs). */
   max: 20,
 
