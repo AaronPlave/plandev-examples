@@ -75,7 +75,7 @@
                 "renderTickLines": true
               }
             ],
-            "height": 90,
+            "height": 64,
             "layers": [
               {
                 "id": 1,
@@ -121,7 +121,7 @@
                 "renderTickLines": true
               }
             ],
-            "height": 90,
+            "height": 64,
             "layers": [
               {
                 "id": 5,
@@ -166,7 +166,7 @@
             "id": 6,
             "name": "rover.driveWindowOpen",
             "yAxes": [],
-            "height": 40,
+            "height": 24,
             "layers": [
               {
                 "id": 6,
@@ -211,7 +211,7 @@
                 "renderTickLines": true
               }
             ],
-            "height": 90,
+            "height": 64,
             "layers": [
               {
                 "id": 2,
@@ -257,7 +257,7 @@
                 "renderTickLines": true
               }
             ],
-            "height": 90,
+            "height": 64,
             "layers": [
               {
                 "id": 4,

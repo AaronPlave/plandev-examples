@@ -89,11 +89,12 @@ function track(pr) {
     return out
 }
 
-/** Lowest value of a real profile and when: linear segments have their extremes at their ends. */
-function lowest(segments, durationSec) {
+/** Lowest value of a real profile over [from, to] and when: linear segments have their extremes at their ends. */
+function lowest(segments, from, to) {
     let best = null
     segments.forEach((s, i) => {
-        for (const t of [s.t, (segments[i + 1]?.t ?? durationSec) - 1e-6]) {
+        for (const t of [s.t, (segments[i + 1]?.t ?? to) - 1e-6]) {
+            if (t < from || t > to) continue
             const v = valueAt(segments, t)
             if (typeof v === 'number' && (!best || v < best.value)) best = { value: v, t }
         }
@@ -207,6 +208,29 @@ module.exports = {
         const at = (sec) => (pr ? [valueAt(pr[R.lon], sec), valueAt(pr[R.lat], sec)] : null)
         const common = (s) => ({ spanId: s.spanId, directiveId: s.directiveId, activityType: s.type, startMs: ms(s.startSec), endMs: s.endSec != null ? ms(s.endSec) : null })
         const given = goalArgs ? this.inputsFromGoalArguments(goalArgs) : null
+        const hhmm = (sec) => iso(sec).slice(11, 16)
+        const pct = (sec) => (valueAt(pr[R.soc], sec) ?? NaN).toFixed(0)
+        // Start → end, and the low point when it is below both: a night's wait can end charged after dropping near empty.
+        const battery = (a, b) => {
+            const low = lowest(pr[R.soc], a, b)
+            const ends = Math.min(valueAt(pr[R.soc], a), valueAt(pr[R.soc], b))
+            return `${pct(a)} → ${pct(b)} %${low && low.value < ends - 3 ? `, lowest ${low.value.toFixed(0)} % at ${hhmm(low.t)}` : ''}`
+        }
+        // When the drive window was shut during [a, b]: "shut 02:47 – 15:37 UTC", from the simulated window resource.
+        const shut = (a, b) => {
+            const w = sunKnown ? intervalsWhere([[pr[R.window], (v) => v === false]], a, b) : []
+            return w.length ? w.map(([x, y]) => `${hhmm(x)} – ${hhmm(y)}`).join(', ') + ' UTC' : null
+        }
+        const solar = (sec) => {
+            const h = valueAt(pr[R.ltst], sec)
+            return typeof h === 'number' ? `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}` : '—'
+        }
+        // Site names, for drives and waits, which name their destination by id.
+        const names = new Map([...catalog().features, ...(given?.targets.features ?? [])].map((f) => [f.id, f.properties?.name ?? f.id]))
+        for (const a of acts) if (a.arguments.siteId) names.set(a.arguments.siteId, a.arguments.siteName || a.arguments.siteId)
+        const nameOf = (id) => names.get(id) ?? id
+        const drivesTo = (to) => acts.filter((a) => a.type === 'Drive' && a.arguments.toSiteId === to)
+        const after = (s) => acts.find((a) => a !== s && a.startSec >= s.endSec - 1)
 
         const features = []
         const rows = []
@@ -232,7 +256,7 @@ module.exports = {
                 details.push(
                     ['Simulated drive', `${simKm.toFixed(2)} km in ${hm(s.endSec - s.startSec)}`],
                     ['Drive energy', `${wh.toFixed(0)} Wh`],
-                    ['Battery', `${(valueAt(pr[R.soc], s.startSec) ?? NaN).toFixed(0)} → ${(valueAt(pr[R.soc], s.endSec) ?? NaN).toFixed(0)} %`],
+                    ['Battery', battery(s.startSec, s.endSec)],
                     ['Steepest slope', `${maxSlope.toFixed(1)}°`],
                 )
                 const darkSec = darkIn(s.startSec, s.endSec)
@@ -241,6 +265,11 @@ module.exports = {
                     if (darkSec > 0) details.push(['Outside the drive window', `${hm(darkSec)} with the Sun below ${minSun}°`])
                 }
                 if (stopped) details.push(['Simulation', stopped])
+                // A drive split across stops: which part, and why it ends here.
+                const parts = drivesTo(to)
+                if (parts.length > 1) details.splice(1, 0, ['Part', `${parts.indexOf(s) + 1} of ${parts.length} to ${nameOf(to)}`])
+                const next = after(s)
+                if (next?.type === 'Wait') details.push(['Stops for', `${next.arguments.reason || 'a wait'} (${hm(next.endSec - next.startSec)})`])
                 rows.push({ spanId: s.spanId, directiveId: s.directiveId, to, start: iso(s.startSec), distanceKm: simKm, durationH: (s.endSec - s.startSec) / 3600, energyWh: wh, socAfter: valueAt(pr[R.soc], s.endSec), maxSlope, darkH: sunKnown ? darkSec / 3600 : null })
                 if (stopped) {
                     notes.push({ warn: true, text: `Drive to ${to} ${stopped}; it covered ${simKm.toFixed(2)} of ${plannedKm.toFixed(2)} km planned.` })
@@ -267,15 +296,24 @@ module.exports = {
             if (pr) {
                 rows.push({ spanId: s.spanId, directiveId: s.directiveId, to: `Wait: ${why}`, start: iso(s.startSec), distanceKm: 0, durationH: (s.endSec - s.startSec) / 3600, energyWh: 0, socAfter: valueAt(pr[R.soc], s.endSec), maxSlope: null, darkH: null, wait: true })
                 const [lon, lat] = at(s.startSec)
+                // Where it stopped: part-way along a drive (the next drive carries the rest of the route), or at a site.
+                const next = after(s)
+                const prev = acts.findLast((a) => a !== s && a.endSec <= s.startSec + 1)
+                const rest = next?.type === 'Drive' ? next.arguments.waypoints || [] : []
+                const restKm = rest.slice(1).reduce((km, p, i) => km + greatCircleKm(rest[i][1], rest[i][0], p[1], p[0], RADIUS_KM), 0)
+                const sunLow = sunKnown ? lowest(pr[R.sun], s.startSec, s.endSec) : null
                 features.push({
                     type: 'Feature',
                     properties: {
                         kind: 'wait', basis: 'simulated', primary: true, name: `Wait: ${why}`,
                         details: [
                             ['Why', why],
+                            ['Stopped', prev?.type === 'Observe' ? `at ${nameOf(prev.arguments.siteId)}, after observing it` : next?.type === 'Drive' ? `on the way to ${nameOf(next.arguments.toSiteId)}, ${restKm.toFixed(2)} km of route left` : '—'],
                             ['Duration', hm(s.endSec - s.startSec)],
-                            ['Battery', `${(valueAt(pr[R.soc], s.startSec) ?? NaN).toFixed(0)} → ${(valueAt(pr[R.soc], s.endSec) ?? NaN).toFixed(0)} %`],
-                            ...(sunKnown ? [['Sun (geometric)', `${sunAt(s.startSec).toFixed(0)}° → ${sunAt(s.endSec - 1e-3).toFixed(0)}° elevation`]] : []),
+                            ...(sunKnown ? [['Drive window', shut(s.startSec, s.endSec) ? `shut ${shut(s.startSec, s.endSec)}` : 'open throughout']] : []),
+                            ...(next ? [['Resumes', `${hhmm(next.startSec)} UTC: ${next.type === 'Drive' ? `Drive to ${nameOf(next.arguments.toSiteId)}` : next.type}`]] : []),
+                            ['Battery', battery(s.startSec, s.endSec)],
+                            ...(sunKnown ? [['Sun (geometric)', `${sunAt(s.startSec).toFixed(0)}° → ${sunAt(s.endSec - 1e-3).toFixed(0)}°${sunLow && sunLow.value < Math.min(sunAt(s.startSec), sunAt(s.endSec - 1e-3)) - 1 ? `, lowest ${sunLow.value.toFixed(0)}°` : ''}`], ['Local solar time', `${solar(s.startSec)} → ${solar(s.endSec - 1e-3)}`]] : []),
                         ],
                         ...common(s),
                     },
@@ -308,7 +346,7 @@ module.exports = {
                         ['Observed from', offKm <= ON_SITE_KM ? 'the site' : `${offKm.toFixed(2)} km short of the site`],
                         ['Duration', hm(s.endSec - s.startSec)],
                         ['Data collected', `${gbit.toFixed(2)} Gbit`],
-                        ['Battery', `${(valueAt(pr[R.soc], s.startSec) ?? NaN).toFixed(0)} → ${(valueAt(pr[R.soc], s.endSec) ?? NaN).toFixed(0)} %`],
+                        ['Battery', battery(s.startSec, s.endSec)],
                         ...(sunKnown ? [['Sun (geometric)', `${sunAt(s.startSec).toFixed(0)}° elevation`]] : []),
                     ],
                     ...common(s),
@@ -358,7 +396,7 @@ module.exports = {
         if (pr) {
             const start = at(0)
             if (typeof start[0] === 'number') features.push({ type: 'Feature', properties: { kind: 'start', basis: 'simulated', name: 'Rover at plan start (simulated)' }, geometry: { type: 'Point', coordinates: start } })
-            const low = lowest(pr[R.soc], durationSec)
+            const low = lowest(pr[R.soc], 0, durationSec)
             if (low && low.value < 99.9) {
                 const [lon, lat] = at(low.t)
                 features.push({

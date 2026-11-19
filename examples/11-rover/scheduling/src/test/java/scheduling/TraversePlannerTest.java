@@ -11,6 +11,7 @@ import scheduling.TraversePlanner.Path;
 import scheduling.TraversePlanner.Power;
 import scheduling.TraversePlanner.Site;
 import scheduling.TraversePlanner.Step;
+import scheduling.TraversePlanner.Walker;
 import scheduling.procedures.ScheduleTraverse;
 
 import java.nio.charset.StandardCharsets;
@@ -178,6 +179,44 @@ class TraversePlannerTest {
       if (steps.get(i).type().equals("Drive") && steps.get(i).part() > 1 && steps.get(i - 1).type().equals("Wait") && steps.get(i - 1).reason().contains("night")) split = true;
     }
     assertTrue(split, "a drive continues after a night's wait");
+  }
+
+  /** The planner's own state-of-charge estimate after each site's observation, replaying the order it chose. */
+  private static List<String> estimatedSocAfterEachSite(Daylight d, long endSec) {
+    final List<Site> sites = ScheduleTraverse.missionSites();
+    final Itinerary it = jezero(d, endSec);
+    final Walker w = new Walker(Terrain.get(), new Power(100, 1680, ARRAY), d, 30, endSec, 1800);
+    TraversePlanner.State st = new TraversePlanner.State(3600, 100);
+    double[] at = {77.4509, 18.4446};
+    final List<String> out = new java.util.ArrayList<>();
+    for (final Site s : it.visited()) {
+      final TraversePlanner.Visit v = w.visit(st, TraversePlanner.route(Terrain.get(), at[1], at[0], s.lat(), s.lon(), Objective.MIN_ENERGY, 20, NONE), s);
+      st = v.end();
+      at = new double[] {s.lon(), s.lat()};
+      out.add(String.format("%s %.0f", s.id(), st.soc()));
+    }
+    return out;
+  }
+
+  /**
+   * The demo plans' policies (96 h from 2027-02-01 00:00 UTC, as in setup-plandev.js). The planner's state of
+   * charge is an estimate of the same array model the simulation runs; this pins how far apart they may drift
+   * at the end of each observation. Simulated values: integrations/mmgis/scripts/verify-rover.js on plans 78/79.
+   */
+  @Test
+  void thePlannersBatteryEstimateMatchesTheDemoSimulations() {
+    final List<String> day = estimatedSocAfterEachSite(DAYLIGHT, 4 * 86400), any = estimatedSocAfterEachSite(ANY_TIME, 4 * 86400);
+    System.out.println("planner SOC after each site, DAYLIGHT: " + day + "\n                          ANY_TIME: " + any);
+    final String[] simDay = {"delta-front 100", "delta-top 58", "margin-unit 100", "neretva-vallis 56", "west-rim 85"};
+    final String[] simAny = {"delta-front 100", "delta-top 98", "margin-unit 100", "neretva-vallis 44", "west-rim 100"};
+    for (final var pair : List.of(List.of(day, List.of(simDay)), List.of(any, List.of(simAny)))) {
+      assertEquals(pair.get(1).size(), pair.get(0).size(), "same sites in the same order");
+      for (int i = 0; i < pair.get(0).size(); i++) {
+        final String[] e = pair.get(0).get(i).split(" "), s = pair.get(1).get(i).split(" ");
+        assertEquals(s[0], e[0]);
+        assertEquals(Double.parseDouble(s[1]), Double.parseDouble(e[1]), 5, "planner estimate within 5 % SOC of the simulation at " + s[0]);
+      }
+    }
   }
 
   @Test

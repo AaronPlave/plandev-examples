@@ -138,3 +138,34 @@ test('helpers', () => {
     assert.strictEqual(integrateStep([seg(0, 2), seg(10, 4)], 5, 20), 2 * 5 + 4 * 10)
     assert.ok(Math.abs(pointToSegmentKm([0, 0.01], [-1, 0], [1, 0], 3396.19) - 0.5927) < 1e-3)
 })
+
+test('a night wait says where the rover stopped, when the window was shut, what resumes and how low the battery went', async () => {
+    const P = {
+        ...PROFILES,
+        'rover.longitude': [seg(0, 77.45), seg(1000, 77.44), seg(9000, 77.43), seg(9500, 77.42)],
+        'rover.driveStatus': [seg(0, 'IDLE'), seg(100, 'DRIVING'), seg(1000, 'IDLE'), seg(8000, 'DRIVING'), seg(9500, 'IDLE')],
+        // Drains overnight to 20 %, then charges back to 70 % by morning.
+        'mainbattery.batterySOC': [seg(0, { initial: 90, rate: 0 }), seg(1000, { initial: 90, rate: -0.02 }), seg(4500, { initial: 20, rate: 0.0143 }), seg(8000, { initial: 70, rate: 0 })],
+        'rover.sunElevationDeg': [seg(0, 20), seg(1200, 5), seg(3000, -40), seg(7900, 12)],
+        'rover.driveWindowOpen': [seg(0, true), seg(1200, false), seg(7900, true)],
+        'rover.localSolarTimeHours': [seg(0, 17.5), seg(8000, 6.25)],
+        'rover.driveMinSunElevationDeg': [seg(0, 10)],
+    }
+    const spans = [
+        { spanId: 1, directiveId: 11, type: 'Drive', startSec: 100, endSec: 1000, arguments: { ...DRIVE, waypoints: WP.slice(0, 2) } },
+        { spanId: 3, directiveId: 13, type: 'Wait', startSec: 1000, endSec: 8000, arguments: { reason: 'night: Sun about to drop below 10°' } },
+        { spanId: 4, directiveId: 14, type: 'Drive', startSec: 8000, endSec: 9500, arguments: { ...DRIVE, waypoints: WP.slice(1) } },
+    ]
+    const o = { ...ops, profiles: async (ds, names) => Object.fromEntries(names.map((n) => [n, P[n] || []])), spans: async (ds, types) => spans.filter((s) => types.includes(s.type)) }
+    const v = await rover.interpret({ ...ctx, ops: o, durationSec: 10000 })
+    const wait = Object.fromEntries(v.features.find((f) => f.properties.kind === 'wait').properties.details)
+    assert.match(wait.Stopped, /^on the way to a, 1\.\d\d km of route left$/)
+    assert.strictEqual(wait['Drive window'], 'shut 00:20 – 02:11 UTC')
+    assert.strictEqual(wait.Resumes, '02:13 UTC: Drive to a')
+    assert.strictEqual(wait.Battery, '90 → 70 %, lowest 20 % at 01:15') // not just start → end
+    assert.strictEqual(wait['Local solar time'], '17:30 → 17:30')
+    const [first, second] = v.features.filter((f) => f.properties.kind === 'drive').map((f) => Object.fromEntries(f.properties.details))
+    assert.strictEqual(first.Part, '1 of 2 to a')
+    assert.match(first['Stops for'], /^night: Sun about to drop below 10° \(1 h 57 min\)$/)
+    assert.strictEqual(second.Part, '2 of 2 to a')
+})

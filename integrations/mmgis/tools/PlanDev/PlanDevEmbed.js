@@ -55,6 +55,7 @@ export const S = {
     markers: [],
     hover: null, // { lat, lon, value?, overlay } under the pointer
     pins: [], // terrain samples pinned by shift-click: { id, lat, lon }
+    pick: null, // { x, y, items: [{ which, f }] }: features of both plans under one click, to choose from
     layer: null,
     otherLayer: null,
     focusLayer: null,
@@ -317,10 +318,7 @@ function draw() {
                 // A feature the adapter labels (a site, say) carries its label on the map; the rest name themselves on hover.
                 if (f.properties.label) l.bindTooltip(f.properties.label, { permanent: true, direction: 'right', offset: [8, 0], className: 'pe_label' })
                 else l.bindTooltip(f.properties.name, { sticky: true })
-                l.on('click', (e) => {
-                    window.L.DomEvent.stopPropagation(e)
-                    if (!S.edit) selectFeature(f)
-                })
+                l.on('click', onFeatureClick)
             },
         },
     ).addTo(Map_.map)
@@ -357,7 +355,10 @@ function otherTooltip(f) {
 function otherStyle(f) {
     const p = f.properties
     const st = { weight: 3, opacity: 0.95, fillOpacity: 0.25, ...p.style, color: OTHER_COLOR, fillColor: OTHER_COLOR }
-    if (p.basis === 'simulated' && /LineString/.test(f.geometry.type)) st.dashArray = '6 5'
+    // The simulated track is a wide casing drawn under the open plan's: where the routes coincide it shows as an
+    // orange edge around the cyan line, and where they part it stands on its own.
+    if (p.basis === 'simulated' && /LineString/.test(f.geometry.type)) Object.assign(st, { weight: 8, opacity: 0.75 })
+    if (p.basis === 'planned') Object.assign(st, { opacity: 0.15 })
     if (p.basis === 'violation') Object.assign(st, { color: '#ff1744', dashArray: '2 6', weight: 4 })
     if (p.fid === S.selectedOther) Object.assign(st, { color: '#ffffff', weight: st.weight + 2, opacity: 1 })
     return st
@@ -378,14 +379,69 @@ function drawOther() {
             pointToLayer: (f, ll) => window.L.circleMarker(ll, { radius: f.properties.kind === 'site' ? 6 : 4 }),
             onEachFeature: (f, l) => {
                 l.bindTooltip(() => otherTooltip(f), { sticky: true })
-                l.on('click', (e) => {
-                    window.L.DomEvent.stopPropagation(e)
-                    if (!S.edit) selectOther(f)
-                })
+                l.on('click', onFeatureClick)
             },
         },
     ).addTo(Map_.map)
     S.layer?.bringToFront()
+}
+
+const HIT_PX = 6
+
+/**
+ * Every shown feature of the open and the compared plan within a few pixels of a click, points before lines
+ * before areas, one entry per activity (its planned band and simulated track are the same thing to pick).
+ */
+function hitsAt(latlng) {
+    const L = window.L
+    const click = Map_.map.latLngToLayerPoint(latlng)
+    const out = new Map()
+    for (const [which, layer] of [['current', S.layer], ['compared', S.otherLayer]]) {
+        layer?.eachLayer((l) => {
+            if (!l.options.opacity && !l.options.fillOpacity) return // hidden (e.g. the current route switched off)
+            const f = l.feature
+            const g = f.geometry
+            let d = Infinity
+            let rank = 1
+            if (l instanceof L.CircleMarker) [d, rank] = [Map_.map.latLngToLayerPoint(l.getLatLng()).distanceTo(click) - l.getRadius(), 0]
+            else if (g.type === 'Polygon') [d, rank] = [pointInRing([latlng.lng, latlng.lat], g.coordinates[0]) ? 0 : l.closestLayerPoint(click)?.distance ?? Infinity, 2]
+            else if (l instanceof L.Polyline) d = l.closestLayerPoint(click)?.distance ?? Infinity
+            if (d > HIT_PX) return
+            const p = f.properties
+            const key = `${which}/${p.spanId ?? p.directiveId ?? `f${p.fid}`}`
+            const best = out.get(key)
+            if (!best || rank < best.rank || (rank === best.rank && p.primary && !best.f.properties.primary)) out.set(key, { which, f, rank, d })
+        })
+    }
+    return [...out.values()].sort((a, b) => a.rank - b.rank || (a.which === 'current' ? -1 : 1) - (b.which === 'current' ? -1 : 1) || a.d - b.d)
+}
+
+/**
+ * A click on a plan feature. Where only one plan has features under the pointer, the nearest one (points
+ * first) is selected. Where the open and the compared plan overlap, a small menu lists both, so a compared
+ * feature hidden under the open plan's route can be reached and is never mistaken for the open plan's.
+ */
+function onFeatureClick(e) {
+    window.L.DomEvent.stopPropagation(e)
+    if (S.edit) return
+    const hits = hitsAt(e.latlng)
+    if (!hits.length) return
+    if (new Set(hits.map((h) => h.which)).size > 1) {
+        S.pick = { x: e.originalEvent.clientX, y: e.originalEvent.clientY, items: hits.slice(0, 6).map(({ which, f }) => ({ which, f })) }
+        return emit()
+    }
+    choose(hits[0])
+}
+
+/** Select one entry of the overlap menu (or a single hit): the open plan's goes to PlanDev too; a compared one never does. */
+export function choose(h) {
+    S.pick = null
+    if (h.which === 'current') selectFeature(h.f)
+    else selectOther(h.f)
+}
+
+export function closePick() {
+    if (S.pick) (S.pick = null), emit()
 }
 
 /** Inspect a feature of the compared plan (the open plan's selection is left alone). */
@@ -585,6 +641,7 @@ export function focusWindow(w) {
 }
 
 function onMapClick(e) {
+    closePick()
     if (S.edit) return editClick(e)
     if (e.originalEvent.shiftKey) return addPin(e.latlng)
     // Clicking near the shown trajectory moves PlanDev's time cursor to that simulated sample.
@@ -841,7 +898,8 @@ function onKey(e) {
     const ed = S.edit
     // Escape is PlanDev's "restore the grid"; inside this frame PlanDev cannot hear it, so pass it on.
     if (!ed && e.key === 'Escape' && !/input|select|textarea/i.test(e.target.tagName)) {
-        if (S.popover) ((S.popover = null), emit())
+        if (S.pick) closePick()
+        else if (S.popover) ((S.popover = null), emit())
         else if (S.ctx.expanded) setExpanded(false)
         return
     }

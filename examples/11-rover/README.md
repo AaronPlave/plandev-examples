@@ -59,6 +59,10 @@ The demo plans start on 2027-02-01 at 00:00 UTC, mid-afternoon at Jezero, with a
 | Lowest battery | 3 % (4 `MinBatterySOC` windows) | 42 % |
 | Waiting (nights, recharge) | 53.8 h | 52.2 h |
 
+Both plans observe 5 of the 6 catalog sites: *Crater floor south* (priority 1) does not fit before the plan end. Both also have one `DriveSlopeLimit` window: the constraint's limit is 15°, but the goal's `maxSlopeDeg` defaults to 20°, so the planner may use a 15.6° cell leaving Neretva Vallis. Setting `maxSlopeDeg` to 15 removes it (19.0 km, finishes at 95.2 h, lowest battery 36 %).
+
+These values are reproduced by `integrations/mmgis/scripts/verify-rover.js --run 78 79`, which re-runs both plans through PlanDev scheduling and simulation and checks that activities, resources, constraint windows and the map's metrics agree. The planner's own state-of-charge estimate is within 2 % of the simulation after every observation (`TraversePlannerTest.thePlannersBatteryEstimateMatchesTheDemoSimulations`); where they part is overnight, which the planner's reserve check does not cover (below).
+
 Driving through the night does not get the rover there sooner. A solar rover that drives on its battery after dark has to repay that energy in daylight, and the night's idle load then takes the battery below the reserve before the next sunrise. The planner's reserve check only covers the drive itself, not the night that follows. That is a weakness of the any-hour policy, not something to patch in the planner.
 
 ## Build and test

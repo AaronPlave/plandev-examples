@@ -258,6 +258,33 @@ function comparisonOutdated(other, plans) {
     return latest?.status === 'success' && latest.simulationDatasetId !== other.view.provenance.simulationDatasetId
 }
 
+/**
+ * How two plans' goal inputs differ ({targets, params} as adapters return them): the parameters whose values
+ * differ, then per geometry type the targets only one plan has, and those moved or re-weighted (by target id).
+ * null when either plan's inputs are unknown. [{ label, current, compared, note? }]
+ */
+function inputDiff(a, b, config, [onlyA, onlyB] = ['only current', 'only compared']) {
+    if (!a || !b) return null
+    const rows = []
+    for (const p of config.params) {
+        const x = a.params[p.key], y = b.params[p.key]
+        if (String(x) !== String(y)) rows.push({ label: `${p.label}${p.unit ? ` (${p.unit})` : ''}`, current: String(x), compared: String(y) })
+    }
+    for (const type of config.targets.types) {
+        const of = (v) => new Map(v.targets.features.filter((f) => f.geometry.type === type).map((f) => [f.id, f]))
+        const A = of(a), B = of(b)
+        const nm = (f) => f.properties?.name ?? f.id
+        const changes = [
+            ...[...A.values()].filter((f) => !B.has(f.id)).map((f) => `${onlyA}: ${nm(f)}`),
+            ...[...B.values()].filter((f) => !A.has(f.id)).map((f) => `${onlyB}: ${nm(f)}`),
+            ...[...A.values()].filter((f) => B.has(f.id) && JSON.stringify(f.geometry.coordinates) !== JSON.stringify(B.get(f.id).geometry.coordinates)).map((f) => `moved: ${nm(f)}`),
+            ...[...A.values()].filter((f) => B.has(f.id) && (f.properties?.priority ?? null) !== (B.get(f.id).properties?.priority ?? null)).map((f) => `priority: ${nm(f)}`),
+        ]
+        if (changes.length) rows.push({ label: `${config.targets.roles?.[type] ?? type}s`, current: String(A.size), compared: String(B.size), note: changes.join(' · ') })
+    }
+    return rows
+}
+
 /** Validate a numeric parameter against an adapter's param spec. */
 function checkParams(spec, input) {
     const out = {}
@@ -351,6 +378,7 @@ function runStep(run, entry, shownDs) {
 
 module.exports = {
     comparisonOutdated,
+    inputDiff,
     counterpart,
     intervalsWhere,
     positionFromProfiles,

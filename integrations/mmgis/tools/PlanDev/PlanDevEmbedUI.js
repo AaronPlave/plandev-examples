@@ -9,8 +9,10 @@
 import React, { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import { inputDiff } from '../../lib/util'
+
 import {
-    COLOR, OTHER_COLOR, S, applyChrome, applyInspector, checkAgainstPlan, clearSelection, compareSel, counterpart, dismissRun, editFeedback, editInputs, emit, focusWindow,
+    COLOR, OTHER_COLOR, S, applyChrome, applyInspector, checkAgainstPlan, choose, clearSelection, closePick, editTargets, compareSel, counterpart, dismissRun, editFeedback, editInputs, emit, focusWindow,
     gridInfo, keep, openPlanInPlanDev, positionsNow, removePin, replan, selectEditItem, selectFeature, selectOther, selectSpan, setCompare, setExpanded, setTime, setFollow, setHidden, setTool,
     startEdit, stopEdit, sunNow, syncOverlays, useS,
 } from './PlanDevEmbed'
@@ -214,7 +216,7 @@ function Layers() {
                 {S.other && <label><input type='checkbox' checked={!S.hide.other} onChange={(e) => setHidden('other', !e.target.checked)} /> <span className='pe_swatch' style={{ background: OTHER_COLOR }} /> Compared plan #{S.other.view.plan.id}</label>}
                 <label title='Pan to keep the vehicle in view as the time cursor moves'><input type='checkbox' checked={S.follow} onChange={(e) => setFollow(e.target.checked)} /> Follow the vehicle</label>
             </div>
-            <div className='pe_muted pe_small'>Wide faint line: planned route · solid: simulated track (dashed for the compared plan) · red: constraint windows</div>
+            <div className='pe_muted pe_small'>Wide faint line: planned route · solid: simulated track (the compared plan’s is a wide orange band underneath, so shared stretches show orange edges) · red: constraint windows. Where both plans overlap, a click lists both.</div>
         </div>
     )
 }
@@ -352,6 +354,30 @@ function Selected() {
                     ⚠ {w.name}: {fmtRange(w.startMs, w.endMs)}
                 </button>
             ))}
+        </div>
+    )
+}
+
+/** Features of both plans under one click: choose which to inspect. The open plan's are listed first. */
+function Pick() {
+    const pk = S.pick
+    if (!pk) return null
+    // Kept inside the map, clear of the inspector beside it.
+    const x = Math.max(4, Math.min(pk.x, (document.querySelector('.pe_map')?.clientWidth ?? window.innerWidth) - 266))
+    return (
+        <div className='pe_pick_menu' style={{ left: x, top: Math.min(pk.y + 8, window.innerHeight - 40 - 26 * pk.items.length) }}>
+            <div className='pe_muted pe_small'>Both plans have features here</div>
+            {pk.items.map((h) => {
+                const p = h.f.properties
+                const v = h.which === 'current' ? S.view : S.other.view
+                return (
+                    <button key={`${h.which}/${p.fid}`} className='pe_item' onClick={() => choose(h)}>
+                        <span className='pe_ellip'><span className='pe_swatch' style={{ background: h.which === 'current' ? COLOR : OTHER_COLOR }} /> {p.name.replace(/ — .*/, '')}</span>
+                        <span className='pe_muted pe_small'>#{v.plan.id}{h.which === 'current' ? '' : ' compared'}</span>
+                    </button>
+                )
+            })}
+            <button className='pe_link pe_small' onClick={closePick}>Cancel (Esc)</button>
         </div>
     )
 }
@@ -534,6 +560,29 @@ function CompareChooser({ onClose }) {
     )
 }
 
+/** What was asked of each plan: the goal inputs that differ. This is usually why the outcomes below differ. */
+function InputDiff({ view, o }) {
+    const rows = S.config && inputDiff(view.inputs, o.inputs, S.config)
+    if (!rows) return <div className='pe_muted pe_small'>Goal inputs: not known for {view.inputs ? `#${o.plan.id}` : `#${view.plan.id}`}, so what was asked differently cannot be shown.</div>
+    if (!rows.length) return <div className='pe_small'><b>Same goal inputs</b> <span className='pe_muted'>· the differences below come from scheduling or simulation alone</span></div>
+    const edited = [view, o].filter((v) => !v.inputsCurrent).map((v) => `#${v.plan.id}`)
+    return (
+        <table className='pe_table pe_cmp pe_inputs'>
+            <thead><tr><th>Goal input that differs</th><th className='pe_right' style={{ color: COLOR }}>Current</th><th className='pe_right' style={{ color: OTHER_COLOR }}>Compared</th></tr></thead>
+            <tbody>
+                {rows.map((r) => (
+                    <tr key={r.label} className='pe_static pe_changed'>
+                        <td>{r.label}{r.note && <div className='pe_muted pe_small'>{r.note}</div>}</td>
+                        <td className='pe_right'>{r.current}</td>
+                        <td className='pe_right'>{r.compared}</td>
+                    </tr>
+                ))}
+                {edited.length > 0 && <tr className='pe_static'><td colSpan={3} className='pe_muted pe_small'>{edited.join(', ')}: inputs edited since the last run, so they may not be what produced the results below.</td></tr>}
+            </tbody>
+        </table>
+    )
+}
+
 function Compare() {
     const view = S.view
     const [choosing, setChoosing] = useState(false)
@@ -557,6 +606,7 @@ function Compare() {
                         <label><input type='checkbox' checked={!S.hide.current} onChange={(e) => setHidden('current', !e.target.checked)} /> current route</label>
                         <label><input type='checkbox' checked={!S.hide.other} onChange={(e) => setHidden('other', !e.target.checked)} /> compared route</label>
                     </div>
+                    <InputDiff view={view} o={o} />
                     {o.status !== 'complete' && o.status !== 'stale' ? <div className='pe_warn'>The compared plan has no successful simulation ({o.status}).</div> : (
                         <table className='pe_table pe_cmp'>
                             <thead>
@@ -606,9 +656,16 @@ function Inputs() {
     const t = S.config.targets
     const fb = editFeedback()
     const notes = (xs) => xs.map((n, i) => <span key={i} className={n.warn ? 'pe_warn' : 'pe_muted'}>{i ? ' · ' : ''}{n.text}</span>)
+    // What would change against the plan's own goal inputs, so the user knows what a re-plan is asked to do.
+    const changed = view.inputs && inputDiff({ targets: editTargets(), params: ed.params }, view.inputs, S.config, ['added', 'removed'])
     return (
         <>
             {!ed.fromInputs && <div className='pe_warn pe_small'>The goal inputs that produced this plan are not known; starting from the sites the plan shows.</div>}
+            {changed && (
+                <div className={`pe_small ${changed.length ? 'pe_changes' : 'pe_muted'}`}>
+                    {changed.length ? `Changed from #${view.plan.id}: ${changed.map((r) => (r.note ? `${r.label} (${r.note})` : `${r.label} ${r.compared} → ${r.current}`)).join(' · ')}` : `No changes yet: these are #${view.plan.id}’s goal inputs.`}
+                </div>
+            )}
             <div className='pe_group_title'>{t.roles?.Point ?? 'Points'} ({ed.sites.length})</div>
             {ed.sites.map((s) => (
                 <div key={s.id} className={`pe_input ${ed.selected === s.id ? 'on' : ''}`} onClick={() => selectEditItem(s.id)}>
@@ -780,6 +837,7 @@ function Root() {
                     <Readout />
                 </div>
                 {!S.edit && <Selected />}
+                {!S.edit && <Pick />}
             </div>
             <Inspector />
         </>

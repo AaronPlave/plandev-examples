@@ -163,3 +163,17 @@ test('hopper evaluate: visits, images and region crossings from simulated landin
     assert.match(by.zone.result, /1 leg\(s\) cross/)
     assert.deepEqual(r.summary.map((m) => m.value), [1])
 })
+
+test('inputDiff: the goal inputs two plans differ in', () => {
+    const { inputDiff } = require('../lib/util')
+    const config = { params: [{ key: 'driveWindow', label: 'Drive' }, { key: 'minSOC', label: 'Battery reserve', unit: '%' }], targets: { types: ['Point', 'Polygon'], roles: { Point: 'Science site', Polygon: 'Region to avoid' } } }
+    const site = (id, lon, priority = 2) => ({ type: 'Feature', id, properties: { name: id.toUpperCase(), priority }, geometry: { type: 'Point', coordinates: [lon, 0] } })
+    const a = { params: { driveWindow: 'DAYLIGHT', minSOC: 30 }, targets: { features: [site('a', 1), site('b', 2, 3)] } }
+    const b = { params: { driveWindow: 'ANY_TIME', minSOC: 30 }, targets: { features: [site('a', 1.5), site('b', 2), site('c', 3)] } }
+    assert.deepStrictEqual(inputDiff(a, b, config), [
+        { label: 'Drive', current: 'DAYLIGHT', compared: 'ANY_TIME' },
+        { label: 'Science sites', current: '2', compared: '3', note: 'only compared: C · moved: A · priority: B' },
+    ])
+    assert.deepStrictEqual(inputDiff(a, a, config), [])
+    assert.strictEqual(inputDiff(a, null, config), null)
+})
