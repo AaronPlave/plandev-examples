@@ -138,6 +138,49 @@ MISSIONS.rover = {
     ],
 }
 
+// MoonFall (examples/12-moonfall): four fictional propulsive drones at the lunar south pole. The goal evaluates a
+// hop with the mission's own solver and terrain, then schedules it; the simulation flies the same trajectory.
+// Plan names are unique across models: suffixed with the model version they were made for.
+const moonfallPlan = (name, args) => ({
+    name: `${name} [v3]`,
+    startTime: '2028-12-15T10:00:00Z',
+    duration: '24:00:00',
+    goals: [{ name: 'PlanHop', arguments: { drone: 'Polaris-A', profile: 'MIN_PROPELLANT', startAfter: 3600e6, surveyFrames: 0, surveyName: '', surveyRegion: '', ...args } }],
+})
+/** A square survey area of half-size `halfM` around a point, straight-sided in the south-polar stereographic plane. */
+function polarSquare(lat, lon, halfM) {
+    const R = 1737.4e3, rad = Math.PI / 180
+    const rho = 2 * R * Math.tan(((90 + lat) * rad) / 2), x = rho * Math.cos(lon * rad), y = rho * Math.sin(lon * rad)
+    const ring = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]].map(([a, b]) => {
+        const px = x + a * halfM, py = y + b * halfM
+        return [+((Math.atan2(py, px) / rad).toFixed(6)), +((2 * Math.atan(Math.hypot(px, py) / (2 * R))) / rad - 90).toFixed(6)]
+    })
+    return JSON.stringify({ type: 'Polygon', coordinates: [ring] })
+}
+// Under the coast of the hop from Polaris-A's base to -89.70, 0 (about 61 s after lift-off, 2.3 km up).
+const RIM_SURVEY = polarSquare(-89.635, -31.5, 300)
+MISSIONS.moonfall = {
+    model: { name: 'moonfall', version: '3', mission: 'MoonFall', jar: `${EX}/12-moonfall/build/libs/moonfall.jar` },
+    goals: [
+        {
+            name: 'PlanHop',
+            jar: `${EX}/12-moonfall/scheduling/build/libs/PlanHop.jar`,
+            description: 'MoonFall: evaluate one drone hop (powered ascent, coast, guided braking, vertical descent) over the pinned lunar terrain and schedule it only if it can be flown, with optional survey imaging in its coast; otherwise fail with the reason.',
+        },
+    ],
+    plans: [
+        moonfallPlan('MoonFall: Polaris-A hop to the rim plain', { latitude: -89.62, longitude: -30 }),
+        moonfallPlan('MoonFall: Polaris-A survey of the west rim, landing in the crater', {
+            latitude: -89.7, longitude: 0, surveyFrames: 20, surveyName: 'West rim', surveyRegion: RIM_SURVEY,
+        }),
+        moonfallPlan('MoonFall: Polaris-A survey of the west rim, landing on the rim plain', {
+            latitude: -89.62, longitude: -30, surveyFrames: 20, surveyName: 'West rim', surveyRegion: RIM_SURVEY,
+        }),
+    ],
+    // Timeline (flight phase, height, propellant, science data), selected activity, 3D Mission View, goals.
+    view: { name: 'MoonFall flight ops', file: path.join(__dirname, '../../cosmolabe/missions/moonfall/plandev-view.json') },
+}
+
 async function upsertModel(pd, m) {
     const { mission_model: models } = await pd.gql(`query($n:String!,$v:String!){ mission_model(where:{name:{_eq:$n}, version:{_eq:$v}}, order_by:{id:desc}){ id } }`, { n: m.name, v: m.version ?? '1' })
     if (models[0]) return models[0].id
@@ -195,6 +238,14 @@ async function setup(pd, key) {
 
     const ids = []
     for (const p of cfg.plans) ids.push(await upsertPlan(pd, key, modelId, goalIds, constraints, p))
+    if (cfg.view) {
+        const { view } = await pd.gql(`query($n:String!){ view(where:{name:{_eq:$n}}){ id } }`, { n: cfg.view.name })
+        const definition = JSON.parse(fs.readFileSync(cfg.view.file, 'utf8'))
+        const viewId = view[0]
+            ? (await pd.gql(`mutation($id:Int!,$d:jsonb!){ update_view_by_pk(pk_columns:{id:$id}, _set:{definition:$d}){ id } }`, { id: view[0].id, d: definition })).update_view_by_pk.id
+            : (await pd.gql(`mutation($v:view_insert_input!){ insert_view_one(object:$v){ id } }`, { v: { name: cfg.view.name, definition } })).insert_view_one.id
+        console.log(`[${key}] view "${cfg.view.name}" = ${viewId}: /plans/<id>?viewId=${viewId}`)
+    }
     console.log(`[${key}] MMGIS backend env:\n  PLANDEV_${key.toUpperCase()}_BASE_PLAN_ID=${ids[0]}`)
 }
 

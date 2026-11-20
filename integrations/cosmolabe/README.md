@@ -15,6 +15,7 @@ The PlanDev side is the `CosmolabePanel` grid panel ("3D Mission View") on the `
 | `missions/mro/catalog.json` | MRO scene: Mars, MRO from `mro_psp.bsp`, the kernels `examples/05-orbiter` loads. No CK, FK or IK: MRO has no attitude or instrument geometry here, and the scene says so. |
 | `missions/mro/pck00011_n0066.tpc` | NAIF's N0066-compatible form of `pck00011.tpc` (same Mars data). See [Mars orientation](#mars-orientation). |
 | `missions/mro/adapter.js` | Which scene object PlanDev activities belong to (MRO), and how a proposal becomes a `ScheduleTargetObservations` target (GeoJSON Point + `properties.window` + provenance). |
+| `missions/moonfall/` | MoonFall (`examples/12-moonfall`): `catalog.json` built by `build-catalog.mjs` from Cosmolabe's standalone MoonFall scene with the authored flights removed; `adapter.js` supplies each drone's position and attitude from the selected simulation's `<drone>.state` profile as a planned `MissionState` source; `drone.gltf` (from `make-drone-model.mjs`) is a conceptual drone, not flight hardware. |
 | `serve.mjs` | Zero-dep static server (CORS) for `missions/`, `spice-kernels/` and Cosmolabe's shared scene data (Mars texture, place names). |
 | `test/mro.test.mjs` | Adapter, catalog and server tests: `node --test integrations/cosmolabe/test/*.test.mjs`. |
 
@@ -95,6 +96,23 @@ one as changed. Limits: procedural goal runs store no argument snapshot (`schedu
 `{}`), so the panel cannot show which earlier inputs produced an existing observation; the observation ↔ target
 link is the goal's directive name plus `source_scheduling_goal_invocation_id`; a rejection is attributed by the
 reason text naming the target.
+
+## MoonFall: simulated state in the scene
+
+The panel (branch `feat/cosmolabe-mission-state`) asks the adapter for `missionState`: which vehicles, which
+resource holds each one's state, and its conventions (MOON_ME_DE421, km, km/s, scalar-first reference-to-body
+quaternion, UTC). For the selected simulation dataset it reads each profile, makes one sample per segment (a
+segment held longer than 2 s also gets a sample 1 ms before the next, so a parked drone stays parked), and supplies
+them all as one batch complete for the simulation span, classified `planned`, provenance naming the dataset. No
+finished simulation: no source, so nothing flies. A simulation of an older plan revision is labelled out of date.
+Activities are shown against their `drone` argument (`adapter.vehicleOf`). MoonFall takes no proposals from the
+3D view (no `targets`). Terrain and imagery come from Cosmolabe's data host through `serve.mjs` `/hosted/`, pinned
+to their builds.
+
+```sh
+node integrations/cosmolabe/missions/moonfall/build-catalog.mjs <cosmolabe checkout at the UI's pinned commit>
+PORT=8891 COSMOLABE_DATA=<cosmolabe>/apps/viewer/test-catalogs node integrations/cosmolabe/serve.mjs
+```
 
 ## Mars orientation
 

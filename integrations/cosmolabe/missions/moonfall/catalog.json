@@ -1,0 +1,556 @@
+{
+ "name": "MoonFall at Shackleton (PlanDev plan)",
+ "description": "Four fictional MoonFall-like drones whose positions and attitudes come from the selected PlanDev simulation of examples/12-moonfall (mission-computed hops). No authored flights. The drone mesh is a conceptual approximation, not MoonFall flight hardware; the survey camera is the fictional model of examples/12-moonfall Camera.",
+ "displayNote": "Drone state: PlanDev simulation (planned). Drone model and camera: conceptual.",
+ "defaultTime": "2028-12-15T11:00:00Z",
+ "defaultViewpoint": "Polaris-A Hop Area",
+ "defaultGeographicNames": [
+  "Moon"
+ ],
+ "require": [
+  "../../cosmolabe/base/naif.json",
+  "../../cosmolabe/base/lunar-surface.json",
+  "../../cosmolabe/places/moon.json",
+  "../../cosmolabe/places/moonfall-sites.json"
+ ],
+ "items": [
+  {
+   "name": "Shackleton Overview",
+   "type": "Viewpoint",
+   "center": "Moon",
+   "frame": "BodyFixed",
+   "distance": 1797.4,
+   "latitude": -89.6,
+   "longitude": 0,
+   "target": [
+    12.129241641678526,
+    0,
+    -1737.357660787553
+   ],
+   "up": [
+    0.9999756307053947,
+    0,
+    0.006981260297961624
+   ]
+  },
+  {
+   "name": "Polaris-A Close-up",
+   "type": "Viewpoint",
+   "center": "Polaris-A",
+   "distance": 0.03,
+   "latitude": 25,
+   "longitude": 90
+  },
+  {
+   "name": "Polaris-A Hop Area",
+   "type": "Viewpoint",
+   "center": "Moon",
+   "frame": "BodyFixed",
+   "distance": 1742.4,
+   "latitude": -89.3,
+   "longitude": -28,
+   "target": [
+    10.251349419872522,
+    -4.5641948248482676,
+    -1737.6637672348104
+   ],
+   "up": [
+    0.010786971479437154,
+    -0.005735534474680111,
+    -0.999925369660452
+   ]
+  },
+  {
+   "name": "PSR Floor View",
+   "type": "Viewpoint",
+   "center": "Moon",
+   "frame": "BodyFixed",
+   "distance": 1757.4,
+   "latitude": -89.7,
+   "longitude": -10,
+   "target": [
+    8.95876024345546,
+    -1.579671144619534,
+    -1737.3761841506794
+   ],
+   "up": [
+    0.9847942535111975,
+    -0.1736457973406761,
+    0.005235963831419759
+   ]
+  },
+  {
+   "name": "Sun",
+   "class": "star",
+   "trajectory": {
+    "type": "FixedPoint",
+    "position": [
+     0,
+     0,
+     0
+    ]
+   },
+   "geometry": {
+    "type": "Globe",
+    "radius": 695000
+   },
+   "label": {
+    "color": [
+     1,
+     0.9,
+     0.3
+    ]
+   }
+  },
+  {
+   "name": "Earth",
+   "class": "planet",
+   "center": "Sun",
+   "trajectory": {
+    "type": "Builtin",
+    "name": "Earth"
+   },
+   "trajectoryPlot": {
+    "visible": false
+   },
+   "geometry": {
+    "type": "Globe",
+    "radius": 6378,
+    "baseMap": "../../cosmolabe/textures/earth-5k.jpg",
+    "atmosphere": "Earth"
+   },
+   "label": {
+    "color": [
+     0.4,
+     0.6,
+     1
+    ]
+   },
+   "bodyFrame": "EquatorJ2000",
+   "rotationModel": {
+    "type": "Builtin"
+   }
+  },
+  {
+   "name": "Moon",
+   "class": "moon",
+   "center": "Earth",
+   "trajectory": {
+    "type": "Builtin",
+    "name": "Moon"
+   },
+   "rotationModel": {
+    "type": "Spice",
+    "bodyFrame": "MOON_ME_DE421",
+    "inertialFrame": "ECLIPJ2000"
+   },
+   "geometry": {
+    "type": "Globe",
+    "radius": 1737.4,
+    "baseMap": "../../cosmolabe/textures/moon-16k.jpg",
+    "normalMap": "../../cosmolabe/textures/moon-normal-16k.jpg",
+    "displacementMap": "../../cosmolabe/textures/moon-displacement-2k.jpg",
+    "displacementScale": 20,
+    "displacementBias": -9,
+    "terrain": {
+     "type": "3dtiles",
+     "frame": "MOON_ME_DE421",
+     "orbitalSolarShadows": {
+      "halfKm": 1500,
+      "size": 256,
+      "maxAltitudeKm": 1150
+     },
+     "url": "../../hosted/cube-terrain/moon-terrain-cube/cube-fused-79895697c6b6-g3-m12-b6747ec9d/tileset.json",
+     "errorTarget": 2,
+     "fadeDurationMs": 0,
+     "datum": {
+      "verticalDatum": "reference-sphere",
+      "heightConvention": "radial"
+     },
+     "sourceMetadata": {
+      "id": "moon-lola-118m+south-pole-lola-10m-residual (scripts/build-moon-terrain/cube.sh)",
+      "kind": "height-grid"
+     },
+     "imagery": [
+      {
+       "type": "cube",
+       "id": "wac",
+       "name": "Moon · WAC context",
+       "description": "LROC global morphology mosaic, June 2013 edition, 100 m/px; source images acquired November 2009–February 2011. Original acquisition shading retained; the context beneath NAC and missing observations.",
+       "attribution": "LROC team / USGS Astrogeology / ASU",
+       "resolutionMeters": 100,
+       "url": "../../hosted/cube-imagery/moon-imagery-cube-wac/cube-imagery-base-8382ea2b8d3b8ff4/imagery.json",
+       "illumination": "baked"
+      },
+      {
+       "type": "cube",
+       "id": "nac",
+       "name": "Moon · NAC south-pole detail",
+       "description": "The original deployed controlled south-pole NAC source, 1 m/px, independently switchable. Original display pixels and acquisition shading retained; nodata is transparent to WAC. DE421 mean-Earth coordinates; absolute registration accuracy is unknown.",
+       "attribution": "LROC team / USGS Astrogeology / ASU",
+       "resolutionMeters": 1,
+       "url": "../../hosted/cube-imagery/moon-imagery-cube-nac-independent/cube-imagery-nac-48f50054db064666/imagery.json",
+       "illumination": "baked"
+      },
+      {
+       "type": "cube",
+       "id": "psr-nac",
+       "name": "PSR observations · stretched / indirectly lit",
+       "description": "NAC_POLE_PSR_SOUTH_STRETCH v1.1: actual long-exposure NAC observations, 2012–2017, in reflected indirect light. A 10 m projected grid with elongated native footprints (10–40 m by 1–4 m). Arbitrary stretched display values, not calibrated reflectance or sunlight at the simulation time. Uncontrolled mosaic; absolute registration accuracy unknown. Missing and saturated observations remain transparent.",
+       "attribution": "2012–2017 · indirect light · NASA/LROC/ASU",
+       "resolutionMeters": 10,
+       "url": "../../hosted/cube-imagery/moon-imagery-cube-psr-nac-stretch/cube-imagery-raster-997ebce1d5066c40/imagery.json",
+       "visible": false,
+       "illumination": "baked",
+       "bounds": [
+        -180,
+        -90,
+        180,
+        -80
+       ]
+      }
+     ],
+     "cubeSphere": {
+      "cpuGrids": "../../hosted/cube-terrain/moon-terrain-cube/cube-fused-79895697c6b6-g3-m12-b6747ec9d/cpu-grids.json",
+      "imagery": {
+       "maxTextureBytes": 536870912
+      }
+     }
+    }
+   },
+   "label": {
+    "color": [
+     0.7,
+     0.7,
+     0.7
+    ]
+   },
+   "items": [
+    {
+     "name": "Polaris-A",
+     "class": "spacecraft",
+     "center": "Moon",
+     "trajectoryFrame": "MOON_ME_DE421",
+     "trajectory": {
+      "type": "MissionState",
+      "source": "Polaris-A"
+     },
+     "rotationModel": {
+      "type": "MissionState",
+      "source": "Polaris-A"
+     },
+     "trajectoryPlot": {
+      "frame": "MOON_ME_DE421",
+      "duration": "20min",
+      "lead": "10min",
+      "sampleInterval": "2s",
+      "fade": 0.2,
+      "color": [
+       0.4,
+       0.85,
+       1
+      ]
+     },
+     "geometry": {
+      "type": "Mesh",
+      "source": "drone.gltf",
+      "size": 0.0022,
+      "castShadow": true
+     },
+     "label": {
+      "color": [
+       0.4,
+       0.85,
+       1
+      ]
+     },
+     "items": [
+      {
+       "name": "Polaris-A Survey Camera",
+       "trajectory": {
+        "type": "FixedPoint",
+        "position": [
+         0,
+         0,
+         0
+        ]
+       },
+       "label": {
+        "visible": false
+       },
+       "geometry": {
+        "type": "Sensor",
+        "target": "Moon",
+        "shape": "rectangular",
+        "horizontalFov": 40,
+        "verticalFov": 30,
+        "range": 5,
+        "mounting": {
+         "boresight": [
+          0,
+          0,
+          -1
+         ],
+         "up": [
+          1,
+          0,
+          0
+         ]
+        },
+        "frustumColor": [
+         0.4,
+         0.85,
+         1
+        ],
+        "frustumOpacity": 0.25
+       }
+      }
+     ]
+    },
+    {
+     "name": "Polaris-B",
+     "class": "spacecraft",
+     "center": "Moon",
+     "trajectoryFrame": "MOON_ME_DE421",
+     "trajectory": {
+      "type": "MissionState",
+      "source": "Polaris-B"
+     },
+     "rotationModel": {
+      "type": "MissionState",
+      "source": "Polaris-B"
+     },
+     "trajectoryPlot": {
+      "frame": "MOON_ME_DE421",
+      "duration": "20min",
+      "lead": "10min",
+      "sampleInterval": "2s",
+      "fade": 0.2,
+      "color": [
+       1,
+       0.65,
+       0.3
+      ]
+     },
+     "geometry": {
+      "type": "Mesh",
+      "source": "drone.gltf",
+      "size": 0.0022,
+      "castShadow": true
+     },
+     "label": {
+      "color": [
+       1,
+       0.65,
+       0.3
+      ]
+     },
+     "items": [
+      {
+       "name": "Polaris-B Survey Camera",
+       "trajectory": {
+        "type": "FixedPoint",
+        "position": [
+         0,
+         0,
+         0
+        ]
+       },
+       "label": {
+        "visible": false
+       },
+       "geometry": {
+        "type": "Sensor",
+        "target": "Moon",
+        "shape": "rectangular",
+        "horizontalFov": 40,
+        "verticalFov": 30,
+        "range": 5,
+        "mounting": {
+         "boresight": [
+          0,
+          0,
+          -1
+         ],
+         "up": [
+          1,
+          0,
+          0
+         ]
+        },
+        "frustumColor": [
+         1,
+         0.65,
+         0.3
+        ],
+        "frustumOpacity": 0.25
+       }
+      }
+     ]
+    },
+    {
+     "name": "Polaris-C",
+     "class": "spacecraft",
+     "center": "Moon",
+     "trajectoryFrame": "MOON_ME_DE421",
+     "trajectory": {
+      "type": "MissionState",
+      "source": "Polaris-C"
+     },
+     "rotationModel": {
+      "type": "MissionState",
+      "source": "Polaris-C"
+     },
+     "trajectoryPlot": {
+      "frame": "MOON_ME_DE421",
+      "duration": "20min",
+      "lead": "10min",
+      "sampleInterval": "2s",
+      "fade": 0.2,
+      "color": [
+       0.6,
+       1,
+       0.5
+      ]
+     },
+     "geometry": {
+      "type": "Mesh",
+      "source": "drone.gltf",
+      "size": 0.0022,
+      "castShadow": true
+     },
+     "label": {
+      "color": [
+       0.6,
+       1,
+       0.5
+      ]
+     },
+     "items": [
+      {
+       "name": "Polaris-C Survey Camera",
+       "trajectory": {
+        "type": "FixedPoint",
+        "position": [
+         0,
+         0,
+         0
+        ]
+       },
+       "label": {
+        "visible": false
+       },
+       "geometry": {
+        "type": "Sensor",
+        "target": "Moon",
+        "shape": "rectangular",
+        "horizontalFov": 40,
+        "verticalFov": 30,
+        "range": 5,
+        "mounting": {
+         "boresight": [
+          0,
+          0,
+          -1
+         ],
+         "up": [
+          1,
+          0,
+          0
+         ]
+        },
+        "frustumColor": [
+         0.6,
+         1,
+         0.5
+        ],
+        "frustumOpacity": 0.25
+       }
+      }
+     ]
+    },
+    {
+     "name": "Polaris-D",
+     "class": "spacecraft",
+     "center": "Moon",
+     "trajectoryFrame": "MOON_ME_DE421",
+     "trajectory": {
+      "type": "MissionState",
+      "source": "Polaris-D"
+     },
+     "rotationModel": {
+      "type": "MissionState",
+      "source": "Polaris-D"
+     },
+     "trajectoryPlot": {
+      "frame": "MOON_ME_DE421",
+      "duration": "20min",
+      "lead": "10min",
+      "sampleInterval": "2s",
+      "fade": 0.2,
+      "color": [
+       1,
+       0.45,
+       0.75
+      ]
+     },
+     "geometry": {
+      "type": "Mesh",
+      "source": "drone.gltf",
+      "size": 0.0022,
+      "castShadow": true
+     },
+     "label": {
+      "color": [
+       1,
+       0.45,
+       0.75
+      ]
+     },
+     "items": [
+      {
+       "name": "Polaris-D Survey Camera",
+       "trajectory": {
+        "type": "FixedPoint",
+        "position": [
+         0,
+         0,
+         0
+        ]
+       },
+       "label": {
+        "visible": false
+       },
+       "geometry": {
+        "type": "Sensor",
+        "target": "Moon",
+        "shape": "rectangular",
+        "horizontalFov": 40,
+        "verticalFov": 30,
+        "range": 5,
+        "mounting": {
+         "boresight": [
+          0,
+          0,
+          -1
+         ],
+         "up": [
+          1,
+          0,
+          0
+         ]
+        },
+        "frustumColor": [
+         1,
+         0.45,
+         0.75
+        ],
+        "frustumOpacity": 0.25
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -3,9 +3,20 @@
   "missions": {
     "mro": {
       "label": "MRO at Mars (examples/05-orbiter)",
-      "models": ["orbiter-mmgis", "orbiter"],
+      "models": [
+        "orbiter-mmgis",
+        "orbiter"
+      ],
       "catalog": "mro/catalog.json",
       "adapter": "mro/adapter.js"
+    },
+    "moonfall": {
+      "label": "MoonFall drones at Shackleton (examples/12-moonfall)",
+      "models": [
+        "moonfall"
+      ],
+      "catalog": "moonfall/catalog.json",
+      "adapter": "moonfall/adapter.js"
     }
   }
 }
