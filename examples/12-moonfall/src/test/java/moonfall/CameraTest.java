@@ -68,4 +68,56 @@ class CameraTest {
     final List<double[]> half = List.of(new double[] {-89.59, -31}, new double[] {-89.59, -29.5}, new double[] {-89.62, -29.5}, new double[] {-89.62, -31});
     assertEquals(0.5, Camera.coverage(square, List.of(half), 2), 0.03);
   }
+
+  // --- Usable science (Camera.CAPABILITY), 15 Dec 2028 11:01 UTC: the Sun 0.3 deg above the polar horizon ---------
+
+  static Camera.Footprint nadir(double lat, double lon, double heightM, double speedMps) {
+    final double[] ground = T.surfacePoint(Vec.direction(lat, lon));
+    final double[] up = Vec.unit(ground);
+    final double[] r = Vec.axpy(ground, heightM, up);
+    final double[] v = Vec.scale(Vec.unit(Vec.cross(Vec.of(0, 0, 1), up)), speedMps);
+    return Camera.footprint(r, HopSolver.coastAttitude(r, v), T);
+  }
+
+  static Camera.Quality quality(double lat, double lon, double speedMps) {
+    final double[] ground = T.surfacePoint(Vec.direction(lat, lon));
+    final double[] up = Vec.unit(ground);
+    final double[] r = Vec.axpy(ground, 800, up);
+    final double[] v = Vec.scale(Vec.unit(Vec.cross(Vec.of(0, 0, 1), up)), speedMps);
+    return Camera.quality(nadir(lat, lon, 800, speedMps), r, v, java.time.Instant.parse("2028-12-15T11:01:00Z"), T);
+  }
+
+  /** The west-rim survey area: the terrain pack hides the Sun there; a geometric image is not a usable one. */
+  @Test
+  void shadowedGroundIsNotUsableForThisCamera() {
+    final Camera.Quality q = quality(-89.62, -30, 50);
+    assertEquals(Camera.Usability.IN_SHADOW, q.usability(), q.reason());
+    assertEquals("BLOCKED_BY_TERRAIN", q.sunView());
+    assertTrue(q.reason().contains("no illuminator"), q.reason());
+  }
+
+  /** A sunlit slope near Shackleton's far rim, imaged at coast speed: usable. */
+  @Test
+  void directlySunlitGroundAtCoastSpeedIsUsable() {
+    final Camera.Quality q = quality(-89.75, -150, 50);
+    assertEquals(Camera.Usability.USABLE, q.usability(), q.reason());
+    assertEquals("CLEAR_WITHIN_TERRAIN_PACK", q.sunView());
+    assertTrue(q.sunIncidenceDeg() < Camera.MAX_INCIDENCE_DEG);
+    // 50 m/s for 4 ms over a 0.27 m GSD.
+    assertEquals(50 * Camera.EXPOSURE_S / (800 * Math.toRadians(Camera.H_FOV_DEG) / Camera.WIDTH_PX), q.smearPx(), 0.01);
+  }
+
+  @Test
+  void theSameSunlitGroundSmearsAtOrbitalSpeed() {
+    assertEquals(Camera.Usability.SMEARED, quality(-89.75, -150, 1600).usability());
+  }
+
+  @Test
+  void nearestFootprintExplainsAMiss() {
+    final java.util.List<double[]> region = java.util.List.of(new double[] {-89.6, 0}, new double[] {-89.6, 1}, new double[] {-89.61, 1}, new double[] {-89.61, 0});
+    final Camera.Footprint fp = nadir(-89.62, -30, 800, 50);
+    final double d = Camera.nearestFootprintM(region, java.util.List.of(fp.corners()));
+    assertTrue(d > 5_000 && d < 7_000, "about 6 km away: " + d);
+    assertEquals(-1, Camera.nearestFootprintM(region, java.util.List.of()));
+  }
 }

@@ -97,7 +97,7 @@ items.splice(items.findIndex((i) => i.name === 'Polaris-A Close-up') + 1, 0, hop
 const catalog = {
   name: 'MoonFall at Shackleton (PlanDev plan)',
   description: 'Four fictional MoonFall-like drones whose positions and attitudes come from the selected PlanDev simulation of examples/12-moonfall (mission-computed hops). No authored flights. The drone mesh is a conceptual approximation, not MoonFall flight hardware; the survey camera is the fictional model of examples/12-moonfall Camera.',
-  displayNote: 'Drone state: PlanDev simulation (planned). Drone model and camera: conceptual.',
+  displayNote: 'Planned (PlanDev simulation) · conceptual drone & camera',
   defaultTime: '2028-12-15T11:00:00Z',
   defaultViewpoint: hopArea.name,
   defaultGeographicNames: src.defaultGeographicNames,

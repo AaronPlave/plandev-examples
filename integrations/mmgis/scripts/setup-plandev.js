@@ -140,9 +140,11 @@ MISSIONS.rover = {
 
 // MoonFall (examples/12-moonfall): four fictional propulsive drones at the lunar south pole. The goal evaluates a
 // hop with the mission's own solver and terrain, then schedules it; the simulation flies the same trajectory.
-// Plan names are unique across models: suffixed with the model version they were made for.
+// Plan names are unique across models: suffixed with the model version they were made for. v4 adds usable-science
+// evaluation of survey images (AcquireSurveyImages geometricCoverage / usableCoverage); v3 plans stay as they are.
+const MOONFALL_VERSION = '4'
 const moonfallPlan = (name, args) => ({
-    name: `${name} [v3]`,
+    name: `${name} [v${MOONFALL_VERSION}]`,
     startTime: '2028-12-15T10:00:00Z',
     duration: '24:00:00',
     goals: [{ name: 'PlanHop', arguments: { drone: 'Polaris-A', profile: 'MIN_PROPELLANT', startAfter: 3600e6, surveyFrames: 0, surveyName: '', surveyRegion: '', ...args } }],
@@ -160,7 +162,7 @@ function polarSquare(lat, lon, halfM) {
 // Under the coast of the hop from Polaris-A's base to -89.70, 0 (about 61 s after lift-off, 2.3 km up).
 const RIM_SURVEY = polarSquare(-89.635, -31.5, 300)
 MISSIONS.moonfall = {
-    model: { name: 'moonfall', version: '3', mission: 'MoonFall', jar: `${EX}/12-moonfall/build/libs/moonfall.jar` },
+    model: { name: 'moonfall', version: MOONFALL_VERSION, mission: 'MoonFall', jar: `${EX}/12-moonfall/build/libs/moonfall.jar` },
     goals: [
         {
             name: 'PlanHop',
@@ -178,7 +180,8 @@ MISSIONS.moonfall = {
         }),
     ],
     // Timeline (flight phase, height, propellant, science data), selected activity, 3D Mission View, goals.
-    view: { name: 'MoonFall flight ops', file: path.join(__dirname, '../../cosmolabe/missions/moonfall/plandev-view.json') },
+    // A view of its own: setup updates a view of the same name in place, and the v3 view is shared.
+    view: { name: 'MoonFall operations', file: path.join(__dirname, '../../cosmolabe/missions/moonfall/plandev-view.json') },
 }
 
 async function upsertModel(pd, m) {

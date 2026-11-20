@@ -94,7 +94,7 @@ async function reportSurvey(planId) {
     console.log(`\n== plan ${planId}: ${plan.name}\n  hop: ${fmt(hop.out)}`)
     if (!img) return fail(`plan ${planId} has no survey`)
     const o = img.out
-    console.log(`  survey "${o.targetName}": ${o.imagesTaken} taken, ${o.imagesSkipped} skipped, ${o.dataMbit.toFixed(1)} Mbit, area coverage ${(100 * o.targetCoverage).toFixed(1)} %`)
+    console.log(`  survey "${o.targetName}": ${o.imagesTaken} taken, ${o.imagesSkipped} skipped, ${o.dataMbit.toFixed(1)} Mbit, area coverage ${(100 * (o.geometricCoverage ?? o.targetCoverage)).toFixed(1)} %`)
     if (o.trajectoryId !== hop.out.trajectoryId) fail(`plan ${planId}: images from ${o.trajectoryId}, hop flew ${hop.out.trajectoryId}`)
     const fc = JSON.parse(o.footprints)
     if (fc.features.length !== o.imagesTaken) fail(`plan ${planId}: ${fc.features.length} footprints for ${o.imagesTaken} images`)

@@ -281,15 +281,18 @@ class MissionSimulationTest {
     final double[] mid = HopSolver.stateAt(hB, start + 6)[0];
     final String region = square(Vec.latDeg(mid), Vec.lonDeg(mid), 150);
     final ActivityDirectiveId img = image("Polaris-A", at(T1, start), 6, region);
-    final double coverB = imaging(plan.simulate(), img).get("targetCoverage").asReal().orElseThrow();
+    final double coverB = imaging(plan.simulate(), img).get("geometricCoverage").asReal().orElseThrow();
     assertTrue(coverB > 0.9, "the area under the B coast is covered: " + coverB);
 
     // Same images, same times; the hop now goes to A.
     plan.delete(plan.simulate().instances("PerformHop").collect().get(0).directiveId);
     hop("Polaris-A", T1, A_LAT, A_LON);
     final Map<String, SerializedValue> rA = imaging(plan.simulate(), img);
-    final double coverA = rA.get("targetCoverage").asReal().orElseThrow();
+    final double coverA = rA.get("geometricCoverage").asReal().orElseThrow();
     assertTrue(coverA < 0.1, "toward A, the area is missed: " + coverA);
+    // Usable coverage never exceeds geometric coverage, and both are reported with the camera's stated capability.
+    assertTrue(rA.get("usableCoverage").asReal().orElseThrow() <= coverA);
+    assertTrue(rA.get("imagingCapability").asString().orElseThrow().contains("no illuminator"));
   }
 
   /** A square GeoJSON Polygon of half-size {@code halfM} around a point, in the south-polar plane. */
