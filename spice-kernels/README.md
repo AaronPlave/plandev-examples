@@ -18,6 +18,8 @@ All kernel files are tracked via Git LFS (`*.bsp`, `*.tls`, `*.tpc`, `*.tf`, `*.
 | `earthstns_itrf93_201023.bsp` | 25 KB | DSN ground-station positions |
 | `gm_de440.tpc` | 12 KB | Gravitational constants (paired with DE440) |
 | `naif0012.tls` | 5 KB | Leap-second table |
+| `moon_pa_de421_1900_2050.bpc` | 1.7 MB | Lunar orientation, DE421 principal axes (LRO PDS archive lrosp_1000) — examples/12-moonfall |
+| `moon_080317.tf` | 22 KB | Lunar frames incl. `MOON_ME_DE421` (LRO PDS archive lrosp_1000) — examples/12-moonfall |
 | `latest_meta_kernel.tm` | 1 KB | Meta-kernel (load order) |
 
 ## Usage

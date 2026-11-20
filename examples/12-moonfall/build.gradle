@@ -1,0 +1,40 @@
+dependencies {
+  implementation project(':libraries:power')
+  implementation project(':libraries:data')
+  // Sun and Earth from SPICE (LunarSky): the shared spice-kernels/ set, read at simulation time.
+  implementation project(':libraries:geometry')
+  implementation name: 'JNISpice-N0067'
+  implementation 'com.google.code.gson:gson:2.8.7'
+}
+
+test {
+  environment("SPICE_DIRECTORY", "${rootDir}/spice-kernels")
+}
+
+// Include library sources so the PlanDev annotation processor can generate value mappers
+// for @AutoValueMapper.Record types defined in the libraries
+sourceSets {
+  main {
+    java {
+      srcDir project(':libraries:power').file('src/main/java')
+      srcDir project(':libraries:data').file('src/main/java')
+    }
+  }
+}
+
+// Fat JAR for uploading to PlanDev
+jar {
+  dependsOn configurations.runtimeClasspath
+  from {
+    configurations.runtimeClasspath.filter { it.exists() }.collect { it.isDirectory() ? it : zipTree(it) }
+  }
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  archiveFileName.set("moonfall.jar")
+}
+
+// Development probe: ./gradlew :examples:12-moonfall:probe --args="startLat startLon destLat destLon ..."
+tasks.register('probe', JavaExec) {
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'moonfall.HopProbe'
+  systemProperties = System.getProperties().findAll { it.key in ['profile', 'prop'] }
+}

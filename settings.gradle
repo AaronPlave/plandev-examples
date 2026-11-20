@@ -28,4 +28,6 @@ include 'examples:10-testing-patterns'
 include 'examples:11-rover'
 include 'examples:11-rover:scheduling'
 include 'examples:11-rover:constraints'
+include 'examples:12-moonfall'
+include 'examples:12-moonfall:scheduling'
 
